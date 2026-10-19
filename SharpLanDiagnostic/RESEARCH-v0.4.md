@@ -48,7 +48,9 @@ Sharp implementations and universal-remote marketing claims are not compatibilit
 An explicit user-confirmed scan targets ONLY numeric 192.168.1.45.
 TCP connect-only range: 1-65535, 16 workers, maximum 80 new connect attempts/sec,
 300 ms connection timeout. No UDP sweep, subnet sweep, passwords or key commands.
-The current Sharp identity/UDN is checked again immediately before scanning.
+The current Sharp identity/UDN is checked again immediately before scanning when available.
+If UPnP is unavailable, the user must explicitly confirm the fixed TV IP manually and
+confirm the full scan again in its dialog. A conflicting advertised identity blocks the scan.
 All sockets bind to the original Wi-Fi/Ethernet Network and abort on loss of the on-link LAN.
 Each port is attempted once; rejected, timed-out, error and not-tested states remain distinct.
 Timeout/filtered/error results are inconclusive, not definitive closed-port claims.

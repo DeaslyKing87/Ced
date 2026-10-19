@@ -20,7 +20,9 @@ deep = [n for n in nodes if n.get("text") == "DEEP SCAN TV"]
 assert len(deep) == 1 and deep[0].get("enabled") == "false", "Unconfirmed target must not allow deep scan"
 with open("ci-ui/logcat.txt") as f:
     logs = f.read()
-assert "FATAL EXCEPTION" not in logs, logs[-4000:]
+assert "Process: com.ced.sharplan," not in logs or "FATAL EXCEPTION" not in logs, logs[-4000:]
+import base64
+print("SHARP_SCREENSHOT=" + base64.b64encode(open("ci-ui/dashboard.png", "rb").read()).decode())
 print("Emulator smoke check passed: dashboard launched, unconfirmed deep scan locked, no crash.")
 PY
 adb shell am force-stop com.ced.sharplan

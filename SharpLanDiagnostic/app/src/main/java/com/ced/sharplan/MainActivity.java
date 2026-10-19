@@ -294,7 +294,7 @@ public class MainActivity extends Activity {
                 + "\n" + (idle ? connection : stage));
         status.setTextColor(error ? 0xFFFF8398 : 0xFF91E9ED);
         dashboard.setText("TV IP      " + (selected == null ? "—" : selected.ip)
-                + "\nPLATFORM   " + (selected == null ? "Unconfirmed" : selected.manufacturer + " / " + selected.model)
+                + "\nPLATFORM   " + (selected == null ? "Unconfirmed" : selected.model.isEmpty() ? "Unverified / manual IP" : selected.manufacturer + " / " + selected.model)
                 + "\nSCAN       " + scanStatus + "\nOPEN PORTS " + allOpen.size()
                 + "\nCANDIDATES " + fingerprints.values().stream().filter(v -> v.contains("Possible control service")).count()
                 + "\nTV CONTROL LOCKED / UNVERIFIED");
@@ -306,7 +306,7 @@ public class MainActivity extends Activity {
         wallpaper.state(error ? 3 : deepRunning ? 4 : !idle ? 1 : identified ? 2 : 0);
         scanButton.setEnabled(idle); manualButton.setEnabled(idle);
         diagnoseButton.setEnabled(idle && selected != null); ip.setEnabled(idle); confirmTarget.setEnabled(idle);
-        deepButton.setEnabled(idle && identified && selected.userConfirmed
+        deepButton.setEnabled(idle && selected != null && selected.userConfirmed
                 && DeepTcpScanner.TARGET.equals(selected.ip));
         cancelButton.setVisibility(deepRunning ? View.VISIBLE : View.GONE);
         cancelButton.setEnabled(deepRunning && !deepCancelled.get());
@@ -697,6 +697,7 @@ public class MainActivity extends Activity {
         flow("Analysing results");
         d.userConfirmed = d.sharp() || d.userConfirmed;
         connection = d.sharp() ? "Identity confirmed. Ready to hunt other services."
+                : d.userConfirmed ? "IP confirmed manually. UPnP identity unverified; deep scan available."
                 : "Identity not confirmed. Check manual options.";
         scanStatus = "Safe checks complete"; append(connection);
     }
@@ -1167,9 +1168,10 @@ public class MainActivity extends Activity {
     }
     void confirmDeepScan() {
         Device d = selected;
-        if (busy.get() || d == null || !d.sharp() || !DeepTcpScanner.TARGET.equals(d.ip)) return;
+        if (busy.get() || d == null || !d.userConfirmed || !DeepTcpScanner.TARGET.equals(d.ip)) return;
         new AlertDialog.Builder(this).setTitle("DEEP SCAN · " + DeepTcpScanner.TARGET)
-                .setMessage("Confirm this is your Sharp TV.\n\nConnect-only scan of TCP ports 1–65535 on "
+                .setMessage((d.sharp() ? "" : "UPnP identity was not verified. This scan relies on your manual confirmation of the TV IP.\n\n")
+                        + "Confirm this is your Sharp TV.\n\nConnect-only scan of TCP ports 1–65535 on "
                         + DeepTcpScanner.TARGET + " only, followed by read-only service identification. "
                         + "Allow about 15–25 minutes and keep the app open. You can stop and export partial results.\n\n"
                         + "No remote commands, pairing attempts or passwords will be sent.")
@@ -1222,17 +1224,22 @@ public class MainActivity extends Activity {
         }
     }
     void deepScan(Device d) throws Exception {
-        if (!DeepTcpScanner.TARGET.equals(d.ip) || !d.userConfirmed || !d.sharp())
+        if (!DeepTcpScanner.TARGET.equals(d.ip) || !d.userConfirmed)
             throw new IOException("Deep scan requires confirmed known Sharp IP.");
         requireLocal(d.ip);
         final Network pinned = lan;
         knownOpen.clear();
         flow("Reconfirming Sharp identity before deep scan");
-        if (d.location.isEmpty()) throw new IOException("Read a current TV identity before deep scan.");
-        Device fresh = new Device(); fresh.ip = d.ip;
-        readDescription(fresh, d.location);
-        if (!fresh.sharp() || (!d.udn.isEmpty() && !fresh.udn.equals(d.udn)))
-            throw new IOException("TV identity changed. Deep scan blocked; reconnect.");
+        if (!d.location.isEmpty()) {
+            Device fresh = new Device(); fresh.ip = d.ip;
+            readDescription(fresh, d.location);
+            if (!fresh.sharp() || (!d.udn.isEmpty() && !fresh.udn.equals(d.udn)))
+                throw new IOException("TV identity changed. Deep scan blocked; reconnect.");
+        } else {
+            append("UPnP identity unavailable. User explicitly confirmed manual TV IP "
+                    + DeepTcpScanner.TARGET + " and confirmed full scan in the dialog. "
+                    + "This is device ownership confirmation, never TV-control verification.");
+        }
         deepCancelled.set(false); networkValidatedAt = 0;
         deepOpen = Collections.emptyList(); fingerprints.clear(); scanCount = 0;
         findingsView.post(() -> findingsView.setText("Listening for open ports…"));

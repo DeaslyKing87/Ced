@@ -10,7 +10,10 @@ SharpLanDiagnostic.apk on the S24. Connect the phone and powered-on TV to the sa
 
 The app automatically finds 192.168.1.45, verifies the advertised Sharp/MStar identity,
 reads device/services and performs narrow connect-only checks. If identity lookup fails,
-Manual / Discovery Options opens. Automatic checks never start a full scan or send keys.
+Manual / Discovery Options opens. Select 192.168.1.45, confirm it belongs to your TV,
+and run inspection. If UPnP is unavailable, the scan dialog explicitly identifies that
+manual confirmation is being used. A conflicting advertised identity blocks the scan.
+Automatic checks never start a full scan or send keys.
 
 Press DEEP SCAN TV and confirm that 192.168.1.45 is your TV. The app rechecks identity,
 then attempts TCP ports 1-65535 only on that address. Default: 16 workers, 300 ms timeout,
