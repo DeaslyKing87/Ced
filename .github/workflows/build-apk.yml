@@ -70,11 +70,28 @@ jobs:
         run: |
           apk="SharpLanDiagnostic/app/build/outputs/apk/debug/app-debug.apk"
           test -s "$apk"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk"
           cp "$apk" SharpLanDiagnostic.apk
           sha256sum SharpLanDiagnostic.apk > SharpLanDiagnostic.apk.sha256
           cat SharpLanDiagnostic.apk.sha256
+
+
+      - name: Enable emulator acceleration
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Verify app launches on Android 15
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash SharpLanDiagnostic/ci-ui-smoke.sh
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -95,5 +112,6 @@ jobs:
           path: |
             SharpLanDiagnostic/app/build/reports/
             SharpLanDiagnostic/app/build/test-results/
+            ci-ui/
           if-no-files-found: ignore
           retention-days: 14

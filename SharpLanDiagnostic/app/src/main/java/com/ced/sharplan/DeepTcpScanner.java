@@ -55,7 +55,7 @@ public final class DeepTcpScanner {
         if (cancelled.get()) return;
         workers = Executors.newFixedThreadPool(WORKERS);
         try {
-            for (int n = 0; n < WORKERS; n++) workers.submit(() -> {
+            for (int n = 0; n < WORKERS && !cancelled.get(); n++) try { workers.submit(() -> {
                 while (!cancelled.get() && !Thread.currentThread().isInterrupted()) {
                     int port = next.getAndIncrement();
                     if (port > LAST) return;
@@ -71,7 +71,10 @@ public final class DeepTcpScanner {
                     if (state == 1 || count % 256 == 0 || count == LAST)
                         listener.update(count, openPorts(), state == 1);
                 }
-            });
+            }); } catch (RejectedExecutionException e) {
+                if (!cancelled.get()) throw e;
+                break;
+            }
             workers.shutdown();
             while (!workers.awaitTermination(200, TimeUnit.MILLISECONDS))
                 if (cancelled.get()) workers.shutdownNow();

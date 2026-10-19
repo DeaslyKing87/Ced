@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
     volatile String stage = "Finding TV", scanStatus = "Not started";
     volatile int scanCount;
     volatile List<Integer> deepOpen = Collections.emptyList();
+    final Set<Integer> knownOpen = new ConcurrentSkipListSet<>();
     final Map<Integer, String> fingerprints = new ConcurrentSkipListMap<>();
     final Set<Socket> deepSockets = ConcurrentHashMap.newKeySet();
     final AtomicBoolean deepCancelled = new AtomicBoolean();
@@ -188,7 +189,7 @@ public class MainActivity extends Activity {
                 + "Allow about 15–25 minutes. Keep this app open.\nProtocol checks collect metadata only.", 12));
         findingsView = tv("No additional services inspected yet.", 14); deep.addView(findingsView);
         Button manualToggle = btn("MANUAL / DISCOVERY OPTIONS", () ->
-                manualPanel.setVisibility(manualPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+                togglePanel(manualPanel));
         root.addView(manualToggle);
         manualPanel = card("MANUAL CONNECTION"); manualPanel.setVisibility(View.GONE);
         ip = new EditText(this); ip.setHint("TV IPv4 address"); ip.setTextColor(0xFFD5E6F1);
@@ -207,7 +208,7 @@ public class MainActivity extends Activity {
         row("Volume −", "Menu", "Channel −"); row("Up"); row("Left", "OK", "Right");
         row("Down"); row("Back"); row("1", "2", "3"); row("4", "5", "6"); row("7", "8", "9"); row("0");
         root.addView(btn("ADVANCED / LOGS", () ->
-                advanced.setVisibility(advanced.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE)));
+                togglePanel(advanced)));
         advanced = card("EVIDENCE ARCHIVE"); advanced.setVisibility(View.GONE);
         rendererView = tv(rendererState, 13); advanced.addView(tv(AwoxResearch.RENDERER_LABEL, 15)); advanced.addView(rendererView);
         managerView = tv(managerState, 13); managerView.setTextIsSelectable(true); advanced.addView(managerView);
@@ -270,14 +271,20 @@ public class MainActivity extends Activity {
     }
 
     String report() {
+        String evidence = "";
+        try (InputStream in = getAssets().open("research-v04.txt")) {
+            evidence = new String(readLimit(in, 131072), StandardCharsets.UTF_8);
+        } catch (Exception e) { evidence = "Bundled research unavailable: " + e.getMessage(); }
         synchronized (log) {
-            return "Sharp LC-40UI7352E diagnostic report\n"
-                    + "This is not a claim that physical TV controls work.\n\n" + log;
+            return "Sharp LC-40UI7352E diagnostic report · v0.4\n"
+                    + "No physical TV controls verified. All remote keys locked.\n\n"
+                    + log + "\n\nBUNDLED RESEARCH EVIDENCE\n" + evidence;
         }
     }
 
     void refreshUi() {
         if (status == null) return;
+        Set<Integer> allOpen = new TreeSet<>(knownOpen); allOpen.addAll(deepOpen);
         boolean idle = !busy.get();
         boolean identified = selected != null && selected.sharp();
         boolean error = connection.startsWith("Error:") || connection.startsWith("Not found");
@@ -288,7 +295,7 @@ public class MainActivity extends Activity {
         status.setTextColor(error ? 0xFFFF8398 : 0xFF91E9ED);
         dashboard.setText("TV IP      " + (selected == null ? "—" : selected.ip)
                 + "\nPLATFORM   " + (selected == null ? "Unconfirmed" : selected.manufacturer + " / " + selected.model)
-                + "\nSCAN       " + scanStatus + "\nOPEN PORTS " + deepOpen.size()
+                + "\nSCAN       " + scanStatus + "\nOPEN PORTS " + allOpen.size()
                 + "\nCANDIDATES " + fingerprints.values().stream().filter(v -> v.contains("Possible control service")).count()
                 + "\nTV CONTROL LOCKED / UNVERIFIED");
         progressLabel.setText(deepRunning ? stage + "\n" + scanCount + " / 65535 ports · "
@@ -317,6 +324,7 @@ public class MainActivity extends Activity {
                 findings.append("TCP ").append(port).append("  ·  OPEN / awaiting fingerprint\n");
         if (deepOpen.size() > 32) findings.append("All ").append(deepOpen.size()).append(" open ports are retained in the export.\n");
         if (findings.length() > 0) findingsView.setText(findings.toString());
+        else if (knownOpen.contains(54871)) findingsView.setText("TCP 54871 · DLNA / media only\nNo physical TV-control interface verified.");
         for (int n = 0; n < devices.getChildCount(); n++) devices.getChildAt(n).setEnabled(idle);
         for (Button button : keyButtons.values()) button.setEnabled(false);
         if (advanced.getVisibility() == View.VISIBLE) synchronized (log) {
@@ -422,7 +430,7 @@ public class MainActivity extends Activity {
     void choose(Device d) {
         if (busy.get()) return;
         selected = d;
-        deepOpen = Collections.emptyList(); fingerprints.clear(); scanCount = 0;
+        deepOpen = Collections.emptyList(); knownOpen.clear(); fingerprints.clear(); scanCount = 0;
         resetControl();
         d.userConfirmed = d.sharp();
         researchTarget = null;
@@ -705,6 +713,7 @@ public class MainActivity extends Activity {
         requireLocal(host);
         try (Socket socket = lan.getSocketFactory().createSocket()) {
             socket.connect(new InetSocketAddress(LanPolicy.address(host), port), 650);
+            knownOpen.add(port);
             append("TCP " + host + ":" + port + " OPEN (not protocol verification)");
             return true;
         } catch (IOException e) {
@@ -1122,6 +1131,7 @@ public class MainActivity extends Activity {
     }
     void automatic() throws Exception {
         flow("Finding TV · checking Wi-Fi / LAN");
+        knownOpen.clear();
         requireLocal(DeepTcpScanner.TARGET);
         ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
         NetworkCapabilities capabilities = cm.getNetworkCapabilities(lan);
@@ -1215,6 +1225,7 @@ public class MainActivity extends Activity {
             throw new IOException("Deep scan requires confirmed known Sharp IP.");
         requireLocal(d.ip);
         final Network pinned = lan;
+        knownOpen.clear();
         flow("Reconfirming Sharp identity before deep scan");
         if (d.location.isEmpty()) throw new IOException("Read a current TV identity before deep scan.");
         Device fresh = new Device(); fresh.ip = d.ip;
@@ -1322,6 +1333,20 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) { }
         }
         return false;
+    }
+
+
+    void togglePanel(LinearLayout view) {
+        view.animate().cancel();
+        if (view.getVisibility() == View.VISIBLE) {
+            view.animate().alpha(0).setDuration(140).withEndAction(() -> {
+                view.setVisibility(View.GONE); view.setAlpha(1);
+            }).start();
+        } else {
+            view.setAlpha(0); view.setVisibility(View.VISIBLE);
+            view.animate().alpha(1).setDuration(180).start();
+            refreshUi();
+        }
     }
 
 }
