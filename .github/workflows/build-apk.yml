@@ -2,40 +2,121 @@ name: Build APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sharp-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      - name: Reuse development APK signing identity
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: sharp-lan-diagnostic-debug-signing-v1
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Extract project
-        run: unzip SharpLanDiagnostic-AndroidStudio.zip
-
-      - name: Build APK
+      - name: Test, lint and build existing project
         working-directory: SharpLanDiagnostic
-        run: gradle :app:assembleDebug
+        run: |
+          if ! gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace; then
+            report="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+            if [ -f "$report" ]; then cat "$report"; fi
+            exit 1
+          fi
+
+      - name: Summarize unit tests
+        working-directory: SharpLanDiagnostic
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          files = glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml")
+          suites = [ET.parse(path).getroot() for path in files]
+          tests = sum(int(s.get("tests", "0")) for s in suites)
+          failures = sum(int(s.get("failures", "0")) for s in suites)
+          errors = sum(int(s.get("errors", "0")) for s in suites)
+          print(f"Unit tests: {tests}; failures: {failures}; errors: {errors}")
+          assert tests >= 62 and failures == 0 and errors == 0
+          PY
+
+      - name: Verify installable APK signature and package
+        run: |
+          apk="SharpLanDiagnostic/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk"
+          cp "$apk" SharpLanDiagnostic.apk
+          sha256sum SharpLanDiagnostic.apk > SharpLanDiagnostic.apk.sha256
+          cat SharpLanDiagnostic.apk.sha256
+
+
+      - name: Enable emulator acceleration
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Verify app launches on Android 15
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash SharpLanDiagnostic/ci-ui-smoke.sh
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SharpLanDiagnostic-APK
-          path: SharpLanDiagnostic/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            SharpLanDiagnostic.apk
+            SharpLanDiagnostic.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SharpLanDiagnostic-build-reports
+          path: |
+            SharpLanDiagnostic/app/build/reports/
+            SharpLanDiagnostic/app/build/test-results/
+            ci-ui/
+          if-no-files-found: ignore
+          retention-days: 14
