@@ -119,3 +119,8 @@ its logs and uninstall it before installing this build.
 
 LAN discovery and physical TV control remain unverified until tested on the
 user's actual network and TV.
+
+Build verification: the first fixed GitHub Actions run passed compilation, unit tests,
+Android lint and APK signature/package verification. These checks do not establish
+actual TV discovery/control. Network changes invalidate cached control capabilities;
+HTTP proxies are bypassed for LAN requests. The APK artifact includes its SHA-256.

@@ -89,7 +89,7 @@ public final class LanPolicy {
 
     public static boolean exactModel(String model) {
         return model != null && model.toUpperCase(Locale.ROOT)
-                .replaceAll("[^A-Z0-9]", "").contains("LC40UI7352E");
+                .replaceAll("[^A-Z0-9]", "").equals("LC40UI7352E");
     }
 
     public static boolean sharp(String manufacturer, String model) {

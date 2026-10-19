@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
         File saved = new File(getFilesDir(), "sharp-diagnostic.txt");
         if (saved.exists()) {
             try (InputStream in = new FileInputStream(saved)) {
-                log.append(new String(readLimit(in, 300000), StandardCharsets.UTF_8));
+                log.append(new String(readLimit(in, 1000000), StandardCharsets.UTF_8));
             } catch (Exception ignored) { }
         }
         buildUi();
@@ -281,6 +281,7 @@ public class MainActivity extends Activity {
 
     void selectLan() throws IOException {
         ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        Network previous = lan;
         lan = null;
         for (Network network : cm.getAllNetworks()) {
             NetworkCapabilities c = cm.getNetworkCapabilities(network);
@@ -295,6 +296,10 @@ public class MainActivity extends Activity {
                         && LanPolicy.privateAddress(address.getAddress().getHostAddress()))
                     addresses.add(address);
             if (!addresses.isEmpty()) {
+                if (previous != null && !previous.equals(network)) {
+                    resetControl();
+                    connection = "Network changed. Inspect the TV again before using controls.";
+                }
                 lan = network;
                 localAddresses = addresses;
                 return;
@@ -489,7 +494,7 @@ public class MainActivity extends Activity {
     String request(String target, String address, String action, String body) throws Exception {
         requireLocal(target);
         URL url = LanPolicy.endpoint(null, address, target);
-        HttpURLConnection c = (HttpURLConnection) lan.openConnection(url);
+        HttpURLConnection c = (HttpURLConnection) lan.openConnection(url, java.net.Proxy.NO_PROXY);
         c.setConnectTimeout(1500);
         c.setReadTimeout(2200);
         c.setInstanceFollowRedirects(false);

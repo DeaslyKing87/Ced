@@ -68,6 +68,7 @@ public class LanPolicyTest {
         assertTrue(LanPolicy.exactModel("LC-40UI7352E"));
         assertTrue(LanPolicy.exactModel("LC 40 UI7352E"));
         assertFalse(LanPolicy.exactModel("LC-40LE735"));
+        assertFalse(LanPolicy.exactModel("LC-40UI7352EX"));
         assertFalse(LanPolicy.sharp("Router vendor", "Smart Remote Control"));
         assertTrue(LanPolicy.sharp("UMC", "LC-40UI7352E"));
     }
