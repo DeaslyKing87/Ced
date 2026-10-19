@@ -7,8 +7,8 @@ android {
         applicationId = "com.ced.sharplan"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3-awox-research"
+        versionCode = 4
+        versionName = "0.4-cyberpunk-research"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

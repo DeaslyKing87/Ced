@@ -55,6 +55,23 @@ public class MainActivity extends Activity {
     volatile GenaObserver observer;
     volatile Device researchTarget;
 
+    CyberBackground wallpaper;
+    LinearLayout advanced, manualPanel;
+    TextView dashboard, progressLabel, findingsView;
+    ProgressBar scanProgress;
+    Button deepButton, cancelButton;
+    volatile String stage = "Finding TV", scanStatus = "Not started";
+    volatile int scanCount;
+    volatile List<Integer> deepOpen = Collections.emptyList();
+    final Map<Integer, String> fingerprints = new ConcurrentSkipListMap<>();
+    final Set<Socket> deepSockets = ConcurrentHashMap.newKeySet();
+    final AtomicBoolean deepCancelled = new AtomicBoolean();
+    volatile DeepTcpScanner deepScanner;
+    volatile boolean deepRunning;
+    volatile long networkValidatedAt;
+    volatile boolean paused;
+
+
 
     static class Service {
         String type = "", id = "", control = "", scpd = "", event = "";
@@ -85,35 +102,46 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         File saved = new File(getFilesDir(), "sharp-diagnostic.txt");
-        if (saved.exists()) {
-            try (InputStream in = new FileInputStream(saved)) {
-                log.append(new String(readLimit(in, 1000000), StandardCharsets.UTF_8));
-            } catch (Exception ignored) { }
-        }
+        if (saved.exists()) try (InputStream in = new FileInputStream(saved)) {
+            log.append(new String(readLimit(in, 1000000), StandardCharsets.UTF_8));
+        } catch (Exception ignored) { }
         captures = new DiagnosticStore(new File(getFilesDir(), "captures"));
+        rendererState = "v0.3 PHYSICAL TEST: renderer volume/mute do not affect the TV. Closed lead.";
+        managerState = "v0.3: one empty ServiceManagerInfo event; no events from physical remote. "
+                + "/web is renderer administration only. This experiment will not be repeated.";
         buildUi();
-        append("Sharp LAN Diagnostic v0.3 — AwoX research. REAL-TV REPORT: renderer volume/mute "
-                + "did not affect physical TV. ALL TV controls remain locked. No unknown vendor actions.");
+        append("Sharp LAN Diagnostic v0.4 · closed AwoX leads retained · ALL remote keys locked.");
+        root.postDelayed(() -> job(this::automatic), 250);
     }
 
     int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
 
     TextView tv(String message, int size) {
         TextView view = new TextView(this);
-        view.setText(message);
-        view.setTextColor(Color.WHITE);
-        view.setTextSize(size);
-        view.setPadding(0, dp(7), 0, dp(7));
+        view.setText(message); view.setTextColor(Color.rgb(213, 230, 241));
+        view.setTextSize(size); view.setPadding(0, dp(8), 0, dp(8));
+        view.setLineSpacing(dp(2), 1);
+        if (size >= 18) { view.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0)); view.setLetterSpacing(.06f); }
         return view;
     }
 
     Button btn(String label, Runnable action) {
         Button button = new Button(this);
-        button.setText(label);
-        button.setAllCaps(false);
-        button.setMinHeight(dp(48));
-        button.setContentDescription(label);
-        button.setOnClickListener(v -> action.run());
+        button.setText(label); button.setAllCaps(false); button.setMinHeight(dp(50));
+        button.setTextSize(13); button.setLetterSpacing(.035f);
+        button.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
+        button.setTextColor(new android.content.res.ColorStateList(
+                new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
+                new int[]{0xFF758598, 0xFF7BEAFF}));
+        android.graphics.drawable.StateListDrawable colors = new android.graphics.drawable.StateListDrawable();
+        colors.addState(new int[]{-android.R.attr.state_enabled}, panel(0xD00E1421, 0xFF283447));
+        colors.addState(new int[]{android.R.attr.state_pressed}, panel(0xFF153C4F, 0xFFC375FF));
+        colors.addState(new int[]{}, panel(0xEB102333, 0xFF26788E));
+        button.setBackground(colors); button.setBackgroundTintList(null);
+        button.setPadding(dp(8), dp(6), dp(8), dp(6));
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(-1, -2);
+        layout.setMargins(0, dp(5), 0, dp(5)); button.setLayoutParams(layout);
+        button.setContentDescription(label); button.setOnClickListener(v -> action.run());
         return button;
     }
 
@@ -124,103 +152,91 @@ public class MainActivity extends Activity {
     }
 
     void buildUi() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.rgb(11, 13, 18));
+        FrameLayout frame = new FrameLayout(this);
+        wallpaper = new CyberBackground(this);
+        wallpaper.mode(getPreferences(MODE_PRIVATE).getInt("background", 0));
+        frame.addView(wallpaper, new FrameLayout.LayoutParams(-1, -1));
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true);
         scroll.setOnApplyWindowInsetsListener((v, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets i = insets.getInsets(
-                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                android.graphics.Insets i = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 v.setPadding(i.left, i.top, i.right, i.bottom);
-            } else {
-                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            }
+            } else v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
             return insets;
         });
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(12), dp(16), dp(20));
-        scroll.addView(root);
-        root.addView(tv("Sharp LAN Diagnostic", 26));
-        root.addView(tv("LC-40UI7352E · AQUOS NET+ · local only", 14));
-        status = tv("", 15);
-        root.addView(status);
-
-        scanButton = addButton("Discover TVs", () -> job(this::discover));
-        ip = new EditText(this);
-        ip.setHint("TV IPv4 address, e.g. 192.168.1.50");
-        ip.setTextColor(Color.WHITE);
-        ip.setHintTextColor(Color.GRAY);
-        ip.setSingleLine();
-        ip.setInputType(InputType.TYPE_CLASS_PHONE);
-        ip.setText("192.168.1.45");
-        root.addView(ip);
-
-        manualButton = addButton("Select manual TV IP", this::manual);
-        root.addView(tv("Discovered devices", 18));
-        devices = new LinearLayout(this);
-        devices.setOrientation(LinearLayout.VERTICAL);
-        root.addView(devices);
-
-        confirmTarget = new CheckBox(this);
-        confirmTarget.setText("I confirm this IP belongs to my Sharp TV");
-        confirmTarget.setVisibility(View.GONE);
-        root.addView(confirmTarget);
-        diagnoseButton = addButton("Inspect selected TV — read-only", this::diagnose);
-        root.addView(tv(AwoxResearch.RENDERER_LABEL, 17));
-        rendererView = tv("", 13);
-        root.addView(rendererView);
-        root.addView(tv("AwoX X_ServiceManager findings", 19));
-        managerView = tv("", 13);
-        managerView.setTextIsSelectable(true);
-        root.addView(managerView);
-        portInput = new EditText(this);
-        portInput.setHint("UPnP/web port from your report or current discovery");
-        portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        portInput.setText("54871");
-        root.addView(portInput);
-        researchButton = addButton("Inspect /web + AwoX SCPD — GET only", this::startResearch);
-        eventButton = addButton("Observe ServiceManager events for 30 seconds", this::startEvents);
-        root.addView(tv("Run GET inspection first. During event observation, use the physical TV remote. "
-                + "No JavaScript is executed and no unknown vendor action or property is sent.", 13));
-
-
-        root.addView(tv("Remote", 20));
-        root.addView(tv("All TV keys are locked in this research build. Renderer replies and HTTP 200 "
-                + "are not physical TV evidence.", 13));
-        controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        root.addView(controls);
-        row("Power", "Home", "Input");
-        row("Volume +", "Mute", "Channel +");
-        row("Volume −", "Menu", "Channel −");
-        row("Up");
-        row("Left", "OK", "Right");
-        row("Down");
-        row("Back");
-        row("1", "2", "3");
-        row("4", "5", "6");
-        row("7", "8", "9");
-        row("0");
-        root.addView(tv("Navigation, Home, Input and number keys remain locked "
-                + "until a model-compatible key protocol is established. "
-                + "DLNA media services do not establish full TV control.", 13));
-
-        root.addView(tv("Diagnostics", 20));
-        exportButton = addButton("Export logs + raw captures (ZIP)", () -> {
+        root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(16), dp(18), dp(24)); scroll.addView(root);
+        TextView title = tv("SHARP // NEXUS", 27); title.setTextColor(0xFF79EDFF); root.addView(title);
+        root.addView(tv("LOCAL DIAGNOSTIC CONSOLE   /   v0.4", 11));
+        LinearLayout card = card("TV LINK");
+        status = tv("", 15); card.addView(status);
+        dashboard = tv("", 13); dashboard.setTypeface(android.graphics.Typeface.MONOSPACE); card.addView(dashboard);
+        progressLabel = tv("", 13); progressLabel.setTextColor(0xFFC5A1FF); card.addView(progressLabel);
+        scanProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        scanProgress.setMax(65535);
+        scanProgress.setProgressTintList(android.content.res.ColorStateList.valueOf(0xFF43DEF1));
+        scanProgress.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xFF43DEF1));
+        card.addView(scanProgress, new LinearLayout.LayoutParams(-1, dp(7)));
+        scanButton = btn("RECONNECT / FIND TV", () -> job(this::automatic)); card.addView(scanButton);
+        LinearLayout deep = card("SERVICE HUNTER");
+        deep.addView(tv("Find services outside the known DLNA renderer.", 14));
+        deepButton = btn("DEEP SCAN TV", this::confirmDeepScan);
+        deepButton.setTextSize(18); deepButton.setMinHeight(dp(66)); deep.addView(deepButton);
+        cancelButton = btn("STOP SCAN · KEEP RESULTS", this::cancelDeepScan); deep.addView(cancelButton);
+        deep.addView(tv("Only 192.168.1.45 · TCP 1–65535\nUp to 80 connects/sec · 16 workers · 300 ms timeout\n"
+                + "Allow about 15–25 minutes. Keep this app open.\nProtocol checks collect metadata only.", 12));
+        findingsView = tv("No additional services inspected yet.", 14); deep.addView(findingsView);
+        Button manualToggle = btn("MANUAL / DISCOVERY OPTIONS", () ->
+                manualPanel.setVisibility(manualPanel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        root.addView(manualToggle);
+        manualPanel = card("MANUAL CONNECTION"); manualPanel.setVisibility(View.GONE);
+        ip = new EditText(this); ip.setHint("TV IPv4 address"); ip.setTextColor(0xFFD5E6F1);
+        ip.setHintTextColor(0xFF91A6B9); ip.setSingleLine(); ip.setInputType(InputType.TYPE_CLASS_PHONE);
+        ip.setText("192.168.1.45"); manualPanel.addView(ip);
+        manualButton = btn("Select manual TV IP", this::manual); manualPanel.addView(manualButton);
+        manualPanel.addView(btn("SSDP discovery", () -> job(this::discover)));
+        devices = new LinearLayout(this); devices.setOrientation(LinearLayout.VERTICAL); manualPanel.addView(devices);
+        confirmTarget = new CheckBox(this); confirmTarget.setText("I confirm this IP belongs to my Sharp TV");
+        confirmTarget.setTextColor(0xFFD5E6F1); confirmTarget.setVisibility(View.GONE); manualPanel.addView(confirmTarget);
+        diagnoseButton = btn("Read selected TV identity/services", this::diagnose); manualPanel.addView(diagnoseButton);
+        LinearLayout remote = card("REMOTE // LOCKED");
+        remote.addView(tv("No physical TV-control protocol verified.\nEvery key stays locked, including volume and mute.", 13));
+        controls = new LinearLayout(this); controls.setOrientation(LinearLayout.VERTICAL); remote.addView(controls);
+        row("Power", "Home", "Input"); row("Volume +", "Mute", "Channel +");
+        row("Volume −", "Menu", "Channel −"); row("Up"); row("Left", "OK", "Right");
+        row("Down"); row("Back"); row("1", "2", "3"); row("4", "5", "6"); row("7", "8", "9"); row("0");
+        root.addView(btn("ADVANCED / LOGS", () ->
+                advanced.setVisibility(advanced.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE)));
+        advanced = card("EVIDENCE ARCHIVE"); advanced.setVisibility(View.GONE);
+        rendererView = tv(rendererState, 13); advanced.addView(tv(AwoxResearch.RENDERER_LABEL, 15)); advanced.addView(rendererView);
+        managerView = tv(managerState, 13); managerView.setTextIsSelectable(true); advanced.addView(managerView);
+        // Retain legacy fields for existing parsing/research source; no UI path can run closed experiments.
+        portInput = new EditText(this); portInput.setText("54871");
+        researchButton = btn("AwoX inspection closed by v0.3 evidence", () -> { });
+        eventButton = btn("Event experiment closed — not repeated", () -> { });
+        exportButton = btn("EXPORT DIAGNOSTIC ZIP", () -> {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("application/zip");
-            intent.putExtra(Intent.EXTRA_TITLE, "SharpLanDiagnostic-0.3-logs.zip");
+            intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("application/zip");
+            intent.putExtra(Intent.EXTRA_TITLE, "SharpLanDiagnostic-0.4-logs.zip");
             startActivityForResult(intent, EXPORT);
-        });
-        shareButton = addButton("Share logs + raw captures", this::share);
-        logView = tv("", 12);
-        logView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        logView.setTextIsSelectable(true);
-        root.addView(logView);
-        setContentView(scroll);
+        }); advanced.addView(exportButton);
+        shareButton = btn("SHARE DIAGNOSTIC ZIP", this::share); advanced.addView(shareButton);
+        advanced.addView(tv("BACKGROUND", 13));
+        Spinner modes = new Spinner(this);
+        modes.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"Animated cyberpunk", "Static background", "Battery saver · 10 fps"}));
+        modes.setSelection(getPreferences(MODE_PRIVATE).getInt("background", 0));
+        modes.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onNothingSelected(AdapterView<?> parent) { }
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                wallpaper.mode(position); getPreferences(MODE_PRIVATE).edit().putInt("background", position).apply();
+            }
+        }); advanced.addView(modes);
+        logView = tv("", 11); logView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        logView.setTextIsSelectable(true); advanced.addView(logView);
+        frame.addView(scroll, new FrameLayout.LayoutParams(-1, -1)); setContentView(frame);
+        frame.setAlpha(0); frame.animate().alpha(1).setDuration(380).start();
         refreshUi();
     }
 
@@ -263,31 +279,47 @@ public class MainActivity extends Activity {
     void refreshUi() {
         if (status == null) return;
         boolean idle = !busy.get();
-        String p = protocol == LEGACY ? "Legacy query replies only — TV keys locked"
-                : protocol == UPNP ? "DLNA renderer replies only — TV keys locked"
-                : "No physical TV remote interface verified";
-        status.setText((selected == null ? "No TV selected" : selected.label())
-                + "\n" + p + "\n" + (idle ? connection : "Working…"));
-        scanButton.setEnabled(idle);
-        manualButton.setEnabled(idle);
-        diagnoseButton.setEnabled(idle && selected != null);
-        ip.setEnabled(idle);
-        confirmTarget.setEnabled(idle);
-        exportButton.setEnabled(idle);
-        shareButton.setEnabled(idle);
-        portInput.setEnabled(idle);
-        researchButton.setEnabled(idle && selected != null);
-        Service manager = selected == null ? null : manager(selected);
-        eventButton.setEnabled(idle && researchTarget == selected
-                && manager != null && manager.scpdRead && !manager.event.isEmpty());
-        rendererView.setText(rendererState);
-        managerView.setText(managerState);
-
-        for (int n = 0; n < devices.getChildCount(); n++)
-            devices.getChildAt(n).setEnabled(idle);
-        for (Map.Entry<String, Button> entry : keyButtons.entrySet())
-            entry.getValue().setEnabled(idle && supports(entry.getKey()));
-        synchronized (log) {
+        boolean identified = selected != null && selected.sharp();
+        boolean error = connection.startsWith("Error:") || connection.startsWith("Not found");
+        status.setText((error ? "● CHECK CONNECTION" : deepRunning ? "◉ DEEP SCAN" : !idle ? "◉ SCANNING"
+                : identified ? "● TV IDENTIFIED" : "○ WAITING")
+                + "\n" + (selected == null ? "Sharp LC-40UI7352E" : selected.name)
+                + "\n" + (idle ? connection : stage));
+        status.setTextColor(error ? 0xFFFF8398 : 0xFF91E9ED);
+        dashboard.setText("TV IP      " + (selected == null ? "—" : selected.ip)
+                + "\nPLATFORM   " + (selected == null ? "Unconfirmed" : selected.manufacturer + " / " + selected.model)
+                + "\nSCAN       " + scanStatus + "\nOPEN PORTS " + deepOpen.size()
+                + "\nCANDIDATES " + fingerprints.values().stream().filter(v -> v.contains("Possible control service")).count()
+                + "\nTV CONTROL LOCKED / UNVERIFIED");
+        progressLabel.setText(deepRunning ? stage + "\n" + scanCount + " / 65535 ports · "
+                + String.format(Locale.US, "%.1f", scanCount * 100.0 / 65535) + "%"
+                : idle ? "Physical control confidence: unverified" : stage);
+        scanProgress.setIndeterminate(!idle && !deepRunning);
+        scanProgress.setProgress(scanCount);
+        wallpaper.state(error ? 3 : deepRunning ? 4 : !idle ? 1 : identified ? 2 : 0);
+        scanButton.setEnabled(idle); manualButton.setEnabled(idle);
+        diagnoseButton.setEnabled(idle && selected != null); ip.setEnabled(idle); confirmTarget.setEnabled(idle);
+        deepButton.setEnabled(idle && identified && selected.userConfirmed
+                && DeepTcpScanner.TARGET.equals(selected.ip));
+        cancelButton.setVisibility(deepRunning ? View.VISIBLE : View.GONE);
+        cancelButton.setEnabled(deepRunning && !deepCancelled.get());
+        exportButton.setEnabled(idle); shareButton.setEnabled(idle);
+        researchButton.setEnabled(false); eventButton.setEnabled(false);
+        rendererView.setText(rendererState); managerView.setText(managerState);
+        StringBuilder findings = new StringBuilder();
+        fingerprints.entrySet().stream().sorted(Comparator.comparingInt(e ->
+                e.getValue().contains("Possible control service") ? 0
+                : e.getValue().contains("Web service") ? 1 : e.getKey() == 54871 ? 3 : 2))
+                .limit(32).forEach(e -> findings.append("TCP ").append(e.getKey()).append("  ·  ")
+                        .append(ServiceFingerprint.category(e.getValue())).append('\n'));
+        for (int port : deepOpen)
+            if (!fingerprints.containsKey(port) && findings.length() < 4000)
+                findings.append("TCP ").append(port).append("  ·  OPEN / awaiting fingerprint\n");
+        if (deepOpen.size() > 32) findings.append("All ").append(deepOpen.size()).append(" open ports are retained in the export.\n");
+        if (findings.length() > 0) findingsView.setText(findings.toString());
+        for (int n = 0; n < devices.getChildCount(); n++) devices.getChildAt(n).setEnabled(idle);
+        for (Button button : keyButtons.values()) button.setEnabled(false);
+        if (advanced.getVisibility() == View.VISIBLE) synchronized (log) {
             logView.setText(log.substring(Math.max(0, log.length() - 16000)));
         }
     }
@@ -323,8 +355,10 @@ public class MainActivity extends Activity {
                 action.run();
             } catch (Exception e) {
                 resetControl();
+                stage = "Check Wi-Fi / TV power";
                 connection = "Error: " + e.getClass().getSimpleName() + ": " + e.getMessage();
                 append(connection);
+                ui(() -> manualPanel.setVisibility(View.VISIBLE));
             } finally {
                 busy.set(false);
                 ui(this::refreshUi);
@@ -388,11 +422,12 @@ public class MainActivity extends Activity {
     void choose(Device d) {
         if (busy.get()) return;
         selected = d;
+        deepOpen = Collections.emptyList(); fingerprints.clear(); scanCount = 0;
         resetControl();
         d.userConfirmed = d.sharp();
         researchTarget = null;
-        rendererState = "Not inspected. DLNA state never unlocks TV keys.";
-        managerState = "No X_ServiceManager findings for this selection.";
+        rendererState = "v0.3: renderer volume/mute did not affect physical TV. Closed lead.";
+        managerState = "v0.3: empty ServiceManagerInfo; no physical-remote events. Experiment closed.";
         confirmTarget.setChecked(false);
         confirmTarget.setVisibility(d.sharp() ? View.GONE : View.VISIBLE);
         connection = d.sharp() ? "TV identity found. Ready for read-only inspection."
@@ -517,7 +552,7 @@ public class MainActivity extends Activity {
         if (deviceNodes.getLength() == 0) throw new IOException("No UPnP device element.");
         Element device = (Element) deviceNodes.item(0);
         String model = child(device, "modelName");
-        if (d.name.isEmpty() || LanPolicy.exactModel(model)) {
+        if (d.model.isEmpty() || d.name.isEmpty() || LanPolicy.exactModel(model)) {
             d.name = child(device, "friendlyName");
             d.model = model;
             d.manufacturer = child(device, "manufacturer");
@@ -626,67 +661,36 @@ public class MainActivity extends Activity {
     }
 
     void inspect(Device d) throws Exception {
-        resetControl();
-        requireLocal(d.ip);
-        captures.begin("SharpLanDiagnostic 0.3\nSelected TV: " + d.ip
-                + "\nUser-reported target LC-40UI7352E; no physical key verified.\n");
-        append("=== READ-ONLY INSPECTION of selected TV " + d.ip + " ===");
+        resetControl(); requireLocal(d.ip);
+        captures.begin("SharpLanDiagnostic 0.4 · TV " + d.ip + "\nAll physical TV controls UNVERIFIED.");
+        saveResearch();
         if (d.location.isEmpty()) {
-            append("Looking for an advertised description from this manually selected IP.");
-            Set<String> locations = ssdp(d.ip, 3000).get(d.ip);
-            if (locations != null) for (String location : locations) {
-                try { readDescription(d, location); }
-                catch (Exception e) { append("Manual description lookup: " + e.getMessage()); }
-            }
+            flow("Confirming identity");
+            Set<String> locations = ssdp(d.ip, 4000).get(d.ip);
+            if (locations != null) for (String location : locations) readDescription(d, location);
         }
-        append("Selected identity: " + d.label() + "; maker=" + d.manufacturer
-                + "; UDN=" + d.udn + "; exact target=" + d.exact());
-        Set<Integer> ports = new LinkedHashSet<>(Arrays.asList(80, 443, 10002));
-        if (!d.location.isEmpty()) addPort(ports, d.location);
+        append("Current identity: " + d.label() + " manufacturer=" + d.manufacturer);
+        flow("Reading services");
         for (Service s : d.services) {
-            addPort(ports, s.control);
-            addPort(ports, s.scpd);
-            if (ports.size() >= 24) break;
+            append("Advertised " + s.type + " · " + s.scpd);
+            if (!s.type.contains("schemas-awox-com") && !s.type.contains("RenderingControl")
+                    && !s.type.contains("AVTransport") && !s.type.contains("ConnectionManager"))
+                try { readScpd(d, s); } catch (Exception e) { append("SCPD: " + e.getMessage()); }
         }
-        boolean legacyPort = false;
-        for (int port : ports) {
-            boolean open = tcpOpen(d.ip, port);
-            if (port == 10002) legacyPort = open;
+        flow("Checking known protocols — connect only");
+        for (int port : new int[]{80, 443, 10002}) tcpOpen(d.ip, port);
+        if (!d.location.isEmpty()) {
+            try { tcpOpen(d.ip, AwoxResearch.port(new URL(d.location))); }
+            catch (Exception e) { append("Advertised port: " + e.getMessage()); }
         }
-
-        if (legacyPort) {
-            try {
-                parseNumber(tcp(d.ip, "POWR", "????"), 0, 1);
-                parseNumber(tcp(d.ip, "VOLM", "????"), 0, 100);
-                protocol = LEGACY;
-                powerReady = volumeReady = false;
-                try {
-                    parseNumber(tcp(d.ip, "MUTE", "????"), 1, 2);
-                    muteReady = false;
-                } catch (Exception e) { append("Legacy mute unavailable: " + e.getMessage()); }
-                append("Legacy Sharp query replies observed. All TV keys remain locked: "
-                        + "no physical TV key effect confirmed.");
-            } catch (Exception e) {
-                resetControl();
-                append("Legacy Sharp TCP NOT verified: " + e.getMessage());
-            }
-        }
-
-        for (Service s : d.services) {
-            try {
-                readScpd(d, s);
-                safeSoap(d, s);
-            } catch (Exception e) {
-                append("UPnP service " + s.type + ": " + e.getClass().getSimpleName()
-                        + ": " + e.getMessage());
-            }
-        }
-        if (manager(d) != null || AwoxResearch.reportedProfile(d.name, d.manufacturer, d.model)) {
-            try { inspectAwox(d); }
-            catch (Exception e) { append("AwoX GET inspection: " + e.getMessage()); }
-        }
-        connection = "Read-only inspection finished. All physical TV keys remain locked.";
-        append(connection);
+        flow("Scanning for other control services — deep scan available");
+        append("Known AwoX renderer is media only. No /web repeat, SOAP state query, vendor action, "
+                + "legacy Sharp query or event subscription sent.");
+        flow("Analysing results");
+        d.userConfirmed = d.sharp() || d.userConfirmed;
+        connection = d.sharp() ? "Identity confirmed. Ready to hunt other services."
+                : "Identity not confirmed. Check manual options.";
+        scanStatus = "Safe checks complete"; append(connection);
     }
 
     void addPort(Set<Integer> ports, String address) {
@@ -876,7 +880,7 @@ public class MainActivity extends Activity {
                 Uri uri = Uri.parse("content://" + getPackageName() + ".diagnostics/" + snapshot.getName());
                 Intent intent = new Intent(Intent.ACTION_SEND);
                 intent.setType("application/zip");
-                intent.putExtra(Intent.EXTRA_SUBJECT, "Sharp LC-40UI7352E AwoX diagnostic");
+                intent.putExtra(Intent.EXTRA_SUBJECT, "Sharp LC-40UI7352E v0.4 network diagnostic");
                 intent.putExtra(Intent.EXTRA_STREAM, uri);
                 intent.setClipData(ClipData.newRawUri("Diagnostic archive", uri));
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -915,21 +919,7 @@ public class MainActivity extends Activity {
     }
 
     void startResearch() {
-        Device d = selected;
-        if (busy.get() || !confirmSelection(d)) return;
-        try {
-            String port = portInput.getText().toString().trim();
-            d.reportedPort = parseNumber(port, 1, 65535);
-        } catch (Exception e) {
-            Toast.makeText(this, "Enter the reported/discovered port, 1–65535.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        job(() -> {
-            captures.begin("SharpLanDiagnostic 0.3 AwoX research\nSelected confirmed TV: "
-                    + d.ip + "\nUser-entered reported port: " + d.reportedPort
-                    + "\nNo physical TV key is verified.\n");
-            inspectAwox(d);
-        });
+        append("Closed v0.3 AwoX lead: /web and SCPD inspection will not be repeated.");
     }
 
     void capture(String kind, String source, int code, Map<String, List<String>> headers,
@@ -1096,73 +1086,12 @@ public class MainActivity extends Activity {
     }
 
     void startEvents() {
-        Device d = selected;
-        if (busy.get() || !confirmSelection(d)) return;
-        job(() -> {
-            Service service = manager(d);
-            if (researchTarget != d || service == null || !service.scpdRead || service.event.isEmpty())
-                throw new IOException("Run GET-only AwoX inspection on this network first.");
-            requireLocal(d.ip);
-            URL event = LanPolicy.endpoint(null, service.event, d.ip);
-            if (!AwoxResearch.sameOrigin(event, new URL(service.scpd)))
-                throw new IOException("Event URL differs from inspected ServiceManager origin.");
-            String local = null;
-            for (LinkAddress address : localAddresses)
-                if (LanPolicy.sameSubnet(d.ip, address.getAddress().getHostAddress(), address.getPrefixLength())) {
-                    local = address.getAddress().getHostAddress(); break;
-                }
-            if (local == null) throw new IOException("No matching local callback address.");
-            managerState = "Observing ServiceManager events for up to 30 seconds. "
-                    + "Use the PHYSICAL TV remote for Volume, Mute, navigation and Input."
-                    + "\nEvent changes are correlation evidence, not a verified command mapping.";
-            append(managerState);
-            observer = new GenaObserver(lan.getSocketFactory(), d.ip, local, event, new GenaObserver.Sink() {
-                @Override public void log(String message) {
-                    append(message);
-                    capture("gena-transport", event.toString(), 0, Collections.emptyMap(),
-                            message.getBytes(StandardCharsets.UTF_8), false);
-                }
-                @Override public void event(GenaProtocol.Message message) {
-                    Map<String, List<String>> headers = new LinkedHashMap<>();
-                    for (Map.Entry<String, String> entry : message.headers.entrySet())
-                        headers.put(entry.getKey(), Arrays.asList(entry.getValue()));
-                    capture("event", event.toString(), 200, headers, message.body, false);
-                    String raw = new String(message.body, StandardCharsets.UTF_8);
-                    append("VALIDATED EVENT SID=" + message.headers.get("sid")
-                            + " SEQ=" + message.headers.get("seq") + "\n" + raw);
-                    analyze("X_ServiceManager event", raw);
-                    try {
-                        Document doc = xml(raw);
-                        NodeList properties = doc.getElementsByTagNameNS("*", "property");
-                        for (int i = 0; i < properties.getLength(); i++) {
-                            Node node = properties.item(i).getFirstChild();
-                            while (node != null) {
-                                if (node instanceof Element) {
-                                    String name = node.getLocalName(), value = node.getTextContent();
-                                    append("EVENT PROPERTY " + name + " = "
-                                            + value.substring(0, Math.min(12000, value.length())));
-                                    capture("event-decoded", event + "#" + name, 200,
-                                            Collections.emptyMap(), value.getBytes(StandardCharsets.UTF_8), false);
-                                    analyze("Event property " + name, value);
-                                }
-                                node = node.getNextSibling();
-                            }
-                        }
-                    } catch (Exception e) { append("Event XML retained but could not parse: " + e.getMessage()); }
-                }
-            });
-            ui(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
-            try { observer.observe(); }
-            finally {
-                observer = null;
-                ui(() -> getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
-            }
-            managerState += "\nObservation finished. Export logs + captures ZIP; all TV keys remain locked.";
-            append(managerState);
-        });
+        append("Closed v0.3 event lead: no subscription will be repeated.");
     }
 
     @Override protected void onDestroy() {
+        cancelDeepScan();
+        if (wallpaper != null) wallpaper.running(false);
         GenaObserver active = observer;
         if (active != null) active.cancel();
         DatagramSocket socket = discoverySocket;
@@ -1170,4 +1099,229 @@ public class MainActivity extends Activity {
         ex.shutdownNow();
         super.onDestroy();
     }
+
+    android.graphics.drawable.GradientDrawable panel(int fill, int border) {
+        android.graphics.drawable.GradientDrawable shape = new android.graphics.drawable.GradientDrawable();
+        shape.setColor(fill); shape.setCornerRadius(dp(16)); shape.setStroke(dp(1), border); return shape;
+    }
+    LinearLayout card(String title) {
+        LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(panel(0xED0D1521, 0xFF244356));
+        card.setPadding(dp(16), dp(10), dp(16), dp(14));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(0, dp(9), 0, dp(9)); root.addView(card, params);
+        TextView heading = tv(title, 16); heading.setTextColor(0xFF64D8EB);
+        heading.setLetterSpacing(.10f); card.addView(heading); return card;
+    }
+    void flow(String text) { stage = text; append("FLOW · " + text); }
+    void saveResearch() {
+        try (InputStream in = getAssets().open("research-v04.txt")) {
+            capture("research-evidence", "bundled:research-v04", 0, Collections.emptyMap(),
+                    readLimit(in, 131072), false);
+        } catch (Exception e) { append("Research capture: " + e.getMessage()); }
+    }
+    void automatic() throws Exception {
+        flow("Finding TV · checking Wi-Fi / LAN");
+        requireLocal(DeepTcpScanner.TARGET);
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        NetworkCapabilities capabilities = cm.getNetworkCapabilities(lan);
+        append("Phone link: " + (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                ? "Wi-Fi" : "Ethernet") + "; all requests bound to this LAN.");
+        captures.begin("v0.4 automatic identity check · " + DeepTcpScanner.TARGET);
+        saveResearch();
+        flow("Finding TV · SSDP discovery");
+        Map<String, Set<String>> found = ssdp(DeepTcpScanner.TARGET, 5000);
+        Set<String> locations = found.get(DeepTcpScanner.TARGET);
+        Device d = new Device(); d.ip = DeepTcpScanner.TARGET;
+        flow("Confirming identity");
+        if (locations != null) for (String location : locations) try { readDescription(d, location); }
+        catch (Exception e) { append("Identity descriptor: " + e.getMessage()); }
+        // /aw is evidenced by the MStarDMR discovery report, not a guessed control endpoint.
+        // Read only the known IP; no /web, event subscription or AwoX action is run.
+        if (d.name.isEmpty()) try {
+            readDescription(d, "http://" + DeepTcpScanner.TARGET + ":54871/aw");
+        } catch (Exception e) { append("Known renderer descriptor unavailable: " + e.getMessage()); }
+        if (!d.sharp()) {
+            selected = null; resetControl();
+            connection = "Not found: matching Sharp/MStar identity. Check Wi-Fi and TV power.";
+            scanStatus = "Identity not confirmed"; append(connection);
+            ui(() -> manualPanel.setVisibility(View.VISIBLE));
+            return;
+        }
+        selected = d; d.userConfirmed = true;
+        try { d.reportedPort = AwoxResearch.port(new URL(d.location)); } catch (Exception ignored) { }
+        append("AUTO-SELECTED " + d.label() + "; current UPnP identity matches known Sharp profile.");
+        ui(() -> { ip.setText(d.ip); portInput.setText(Integer.toString(d.reportedPort));
+            confirmTarget.setVisibility(View.GONE); devices.removeAllViews(); });
+        inspect(d);
+    }
+    void confirmDeepScan() {
+        Device d = selected;
+        if (busy.get() || d == null || !d.sharp() || !DeepTcpScanner.TARGET.equals(d.ip)) return;
+        new AlertDialog.Builder(this).setTitle("DEEP SCAN · " + DeepTcpScanner.TARGET)
+                .setMessage("Confirm this is your Sharp TV.\n\nConnect-only scan of TCP ports 1–65535 on "
+                        + DeepTcpScanner.TARGET + " only, followed by read-only service identification. "
+                        + "Allow about 15–25 minutes and keep the app open. You can stop and export partial results.\n\n"
+                        + "No remote commands, pairing attempts or passwords will be sent.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("CONFIRM & SCAN", (dialog, which) -> {
+                    d.userConfirmed = true; job(() -> deepScan(d));
+                }).show();
+    }
+    void cancelDeepScan() {
+        if (!deepRunning) return;
+        deepCancelled.set(true);
+        DeepTcpScanner scanner = deepScanner;
+        if (scanner != null) scanner.cancel();
+        for (Socket socket : deepSockets) try { socket.close(); } catch (IOException ignored) { }
+        stage = "Stopping · preserving partial results"; ui(this::refreshUi);
+    }
+    void validateDeepNetwork(Network pinned) throws IOException {
+        long now = android.os.SystemClock.elapsedRealtime();
+        synchronized (deepSockets) {
+            if (now - networkValidatedAt < 1000) return;
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            NetworkCapabilities caps = cm.getNetworkCapabilities(pinned);
+            LinkProperties properties = cm.getLinkProperties(pinned);
+            boolean valid = caps != null && properties != null
+                    && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET));
+            boolean local = false;
+            if (valid) for (LinkAddress address : properties.getLinkAddresses())
+                if (address.getAddress() instanceof Inet4Address && LanPolicy.sameSubnet(DeepTcpScanner.TARGET,
+                        address.getAddress().getHostAddress(), address.getPrefixLength())) local = true;
+            if (!local) {
+                cancelDeepScan(); throw new IOException("TV LAN disconnected/changed; scan cancelled.");
+            }
+            networkValidatedAt = now;
+        }
+    }
+    Socket deepSocket(Network pinned, int port, int timeout) throws IOException {
+        if (deepCancelled.get() || Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Cancelled");
+        validateDeepNetwork(pinned);
+        Socket socket = pinned.getSocketFactory().createSocket();
+        deepSockets.add(socket);
+        try {
+            if (deepCancelled.get()) throw new InterruptedIOException("Cancelled");
+            socket.connect(new InetSocketAddress(LanPolicy.address(DeepTcpScanner.TARGET), port), timeout);
+            return socket;
+        } catch (IOException | RuntimeException e) {
+            deepSockets.remove(socket); try { socket.close(); } catch (IOException ignored) { } throw e;
+        }
+    }
+    void deepScan(Device d) throws Exception {
+        if (!DeepTcpScanner.TARGET.equals(d.ip) || !d.userConfirmed || !d.sharp())
+            throw new IOException("Deep scan requires confirmed known Sharp IP.");
+        requireLocal(d.ip);
+        final Network pinned = lan;
+        flow("Reconfirming Sharp identity before deep scan");
+        if (d.location.isEmpty()) throw new IOException("Read a current TV identity before deep scan.");
+        Device fresh = new Device(); fresh.ip = d.ip;
+        readDescription(fresh, d.location);
+        if (!fresh.sharp() || (!d.udn.isEmpty() && !fresh.udn.equals(d.udn)))
+            throw new IOException("TV identity changed. Deep scan blocked; reconnect.");
+        deepCancelled.set(false); networkValidatedAt = 0;
+        deepOpen = Collections.emptyList(); fingerprints.clear(); scanCount = 0;
+        findingsView.post(() -> findingsView.setText("Listening for open ports…"));
+        final Set<Integer> reported = ConcurrentHashMap.newKeySet();
+        captures.begin("v0.4 DEEP SCAN\nTarget=" + d.ip + "\nIdentity=" + d.label()
+                + "\n16 workers; 80 connects/sec maximum; 300 ms timeout; TCP 1–65535."
+                + "\nExplicit user confirmation received. No other host will be scanned.");
+        saveResearch();
+        deepRunning = true;
+        scanStatus = "TCP connect scan";
+        ui(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        deepScanner = new DeepTcpScanner(d.ip, true, (port, timeout) -> {
+            Socket socket = deepSocket(pinned, port, timeout);
+            try { /* Successful connect only. No bytes are sent. */ }
+            finally { deepSockets.remove(socket); socket.close(); }
+        }, (completed, open, newlyOpen) -> {
+            scanCount = completed; deepOpen = open;
+            for (int port : open) if (reported.add(port)) {
+                append("OPEN TCP " + d.ip + ":" + port + " — not TV-control evidence");
+                capture("open-port", "tcp://" + d.ip + ":" + port, 0, Collections.emptyMap(),
+                        ("Open TCP " + port + "\nConnect only; no control protocol verified.")
+                                .getBytes(StandardCharsets.UTF_8), false);
+            }
+            stage = "Scanning for other control services";
+            ui(this::refreshUi);
+        });
+        try {
+            if (deepCancelled.get()) deepScanner.cancel();
+            flow("Scanning for other control services");
+            try { deepScanner.run(); }
+            finally {
+                // Completed or cancelled scans retain every port state and every open-port result.
+                capture("tcp-port-results-csv", "local:tcp-1-65535.csv", 0, Collections.emptyMap(),
+                        deepScanner.csv().getBytes(StandardCharsets.UTF_8), false);
+                capture("tcp-scan-summary", "local:scan-summary", 0, Collections.emptyMap(),
+                        deepScanner.summary().getBytes(StandardCharsets.UTF_8), false);
+                append(deepScanner.summary());
+            }
+            if (!deepCancelled.get()) {
+                flow("Identifying open services · read-only metadata");
+                scanStatus = "Fingerprinting";
+                ServiceFingerprint.Access access = new ServiceFingerprint.Access() {
+                    public Socket open(int port) throws IOException { return deepSocket(pinned, port, 700); }
+                    public boolean cancelled() { return deepCancelled.get(); }
+                };
+                ServiceFingerprint probe = new ServiceFingerprint(access, (kind, source, bytes, truncated) ->
+                        capture(kind, source, 0, Collections.emptyMap(), bytes, truncated));
+                // Sequential service probing; separate from the connect workers. No protocol flood.
+                for (int port : deepOpen) {
+                    if (deepCancelled.get()) break;
+                    stage = "Analysing TCP " + port; ui(this::refreshUi);
+                    String evidence = rendererPort(d, port)
+                            ? "TCP " + port + " · AwoX DLNA / media only. Closed v0.3 lead; not re-probed."
+                            : probe.inspect(port);
+                    fingerprints.put(port, evidence);
+                    capture("protocol-finding", "tcp://" + d.ip + ":" + port, 0, Collections.emptyMap(),
+                            evidence.getBytes(StandardCharsets.UTF_8), false);
+                    append("TCP " + port + " · " + ServiceFingerprint.category(evidence));
+                    // Remove references to sockets already closed by the metadata probe.
+                    deepSockets.removeIf(Socket::isClosed);
+                    ui(this::refreshUi);
+                    try { Thread.sleep(500); } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt(); cancelDeepScan(); break;
+                    }
+                }
+            }
+            scanStatus = deepCancelled.get() ? "Stopped · partial results saved" : "Complete";
+            connection = scanStatus + ". All TV controls remain locked.";
+            append(connection);
+        } finally {
+            if (deepScanner != null) deepScanner.cancel();
+            for (Socket socket : deepSockets) try { socket.close(); } catch (IOException ignored) { }
+            deepSockets.clear(); deepRunning = false;
+            ui(() -> { getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); refreshUi(); });
+        }
+    }
+    @Override protected void onResume() {
+        super.onResume(); paused = false;
+        if (wallpaper != null) wallpaper.running(true);
+    }
+    @Override protected void onPause() {
+        if (wallpaper != null) wallpaper.running(false);
+        paused = true; super.onPause();
+    }
+    @Override protected void onStop() {
+        // No hidden background port scan or foreground service. Preserve partial results on exit.
+        cancelDeepScan(); super.onStop();
+    }
+
+
+    boolean rendererPort(Device d, int port) {
+        if (port == 54871) return true;
+        for (Service service : d.services) {
+            if (!(service.type.contains("schemas-awox-com") || service.type.contains("RenderingControl")
+                    || service.type.contains("AVTransport") || service.type.contains("ConnectionManager"))) continue;
+            for (String address : new String[]{service.control, service.scpd, service.event})
+                if (!address.isEmpty()) try {
+                    if (AwoxResearch.port(new URL(address)) == port) return true;
+                } catch (Exception ignored) { }
+        }
+        return false;
+    }
+
 }
