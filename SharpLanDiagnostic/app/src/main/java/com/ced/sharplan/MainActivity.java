@@ -1131,7 +1131,7 @@ public class MainActivity extends Activity {
     }
     void automatic() throws Exception {
         flow("Finding TV · checking Wi-Fi / LAN");
-        knownOpen.clear();
+        knownOpen.clear(); deepOpen = Collections.emptyList(); fingerprints.clear(); scanCount = 0;
         requireLocal(DeepTcpScanner.TARGET);
         ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
         NetworkCapabilities capabilities = cm.getNetworkCapabilities(lan);
@@ -1202,6 +1202,7 @@ public class MainActivity extends Activity {
                 if (address.getAddress() instanceof Inet4Address && LanPolicy.sameSubnet(DeepTcpScanner.TARGET,
                         address.getAddress().getHostAddress(), address.getPrefixLength())) local = true;
             if (!local) {
+                append("TV LAN disconnected/changed. Cancelling scan and retaining partial results.");
                 cancelDeepScan(); throw new IOException("TV LAN disconnected/changed; scan cancelled.");
             }
             networkValidatedAt = now;

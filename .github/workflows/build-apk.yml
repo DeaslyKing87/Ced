@@ -49,7 +49,12 @@ jobs:
 
       - name: Test, lint and build existing project
         working-directory: SharpLanDiagnostic
-        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+        run: |
+          if ! gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace; then
+            report="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+            if [ -f "$report" ]; then cat "$report"; fi
+            exit 1
+          fi
 
       - name: Summarize unit tests
         working-directory: SharpLanDiagnostic

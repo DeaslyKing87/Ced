@@ -90,8 +90,8 @@ public final class ServiceFingerprint {
         return out.append("\n").append(tlsEvidence).append("\nClassification: ").append(category(out.toString() + tlsEvidence)).toString();
     }
     static boolean nonWebPort(int port) {
-        return Arrays.asList(21,22,23,25,53,110,111,135,139,143,445,465,515,548,587,
-                631,853,990,993,995,1433,1521,1883,2049,3306,3389,5432,5672,5900,
+        return Arrays.asList(21,22,23,25,53,110,111,135,139,143,445,465,515,548,554,587,
+                631,853,990,993,995,1433,1521,1883,2049,2323,3306,3389,5037,5432,5555,5672,5900,8554,
                 6379,8009,8883,9100,10002,11211,27017).contains(port);
     }
     private void inspectWs(int port, boolean tls, String response, StringBuilder out) {
@@ -183,6 +183,8 @@ public final class ServiceFingerprint {
         socket.setSSLParameters(parameters);
         try {
             socket.startHandshake();
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(DeepTcpScanner.TARGET, socket.getSession()))
+                throw new SSLPeerUnverifiedException("Certificate does not verify the selected TV IP");
             capture.save("tls-handshake", source(port, "tls", "/"),
                     ("TLS handshake verified: " + socket.getSession().getProtocol() + " "
                             + socket.getSession().getCipherSuite()).getBytes(StandardCharsets.UTF_8), false);

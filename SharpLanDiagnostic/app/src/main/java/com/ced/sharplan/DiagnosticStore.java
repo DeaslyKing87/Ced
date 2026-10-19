@@ -30,7 +30,8 @@ public final class DiagnosticStore {
                 kind.replaceAll("[^A-Za-z0-9_-]", "_"));
         String extension = source.matches("(?i).*\\.js(?:\\?.*)?") ? ".js"
                 : source.matches("(?i).*\\.json(?:\\?.*)?") ? ".json"
-                : source.matches("(?i).*\\.xml(?:\\?.*)?") ? ".xml" : ".txt";
+                : source.matches("(?i).*\\.xml(?:\\?.*)?") ? ".xml"
+                : source.matches("(?i).*\\.csv(?:\\?.*)?") ? ".csv" : ".txt";
         String file = prefix + extension;
         String digest = hex(MessageDigest.getInstance("SHA-256").digest(body));
         String metadata = "Source: " + source + "\nHTTP/status: " + status

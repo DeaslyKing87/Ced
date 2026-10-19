@@ -39,7 +39,7 @@ public class ServiceFingerprintTest {
         FakeSocket web = new FakeSocket("HTTP/1.1 200 OK\r\nServer: TV-local\r\nContent-Length: 5\r\n\r\nHello");
         List<String> saved = new ArrayList<>();
         String result = probe(Arrays.asList(passive,web), saved).inspect(8123);
-        String request = web.sent.toString(StandardCharsets.UTF_8);
+        String request = new String(web.sent.toByteArray(), StandardCharsets.UTF_8);
         assertTrue(request.startsWith("GET / HTTP/1.1\r\nHost: 192.168.1.45:8123\r\n"));
         assertFalse(request.contains("POST")); assertFalse(request.contains("Authorization"));
         assertEquals(0, passive.sent.size()); assertTrue(result.contains("Web service"));

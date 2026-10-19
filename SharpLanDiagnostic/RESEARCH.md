@@ -1,3 +1,8 @@
+# Historical v0.3 investigation — superseded by v0.4
+
+The v0.3 /web and event experiments are complete and are NOT repeated in v0.4.
+See [RESEARCH-v0.4.md](RESEARCH-v0.4.md) for definitive user-reported results and the current experiment.
+
 # AwoX/MStar investigation — 0.3
 
 ## What is established
