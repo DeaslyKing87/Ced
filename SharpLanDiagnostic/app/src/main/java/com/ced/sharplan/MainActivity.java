@@ -122,7 +122,7 @@ public class MainActivity extends Activity {
         view.setText(message); view.setTextColor(Color.rgb(213, 230, 241));
         view.setTextSize(size); view.setPadding(0, dp(8), 0, dp(8));
         view.setLineSpacing(dp(2), 1);
-        if (size >= 18) { view.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0)); view.setLetterSpacing(.06f); }
+        if (size >= 18) { view.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)); view.setLetterSpacing(.06f); }
         return view;
     }
 
@@ -130,7 +130,7 @@ public class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(label); button.setAllCaps(false); button.setMinHeight(dp(50));
         button.setTextSize(13); button.setLetterSpacing(.035f);
-        button.setTypeface(android.graphics.Typeface.create("sans-serif-medium", 0));
+        button.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
         button.setTextColor(new android.content.res.ColorStateList(
                 new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
                 new int[]{0xFF758598, 0xFF7BEAFF}));
