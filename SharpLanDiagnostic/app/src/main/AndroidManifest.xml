@@ -9,5 +9,10 @@
                 <action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <provider
+            android:name=".DiagnosticProvider"
+            android:authorities="com.ced.sharplan.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true"/>
     </application>
 </manifest>

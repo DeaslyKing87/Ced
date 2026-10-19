@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ClipData;
 import android.graphics.Color;
 import android.net.*;
 import android.net.wifi.WifiManager;
@@ -45,20 +46,37 @@ public class MainActivity extends Activity {
     volatile boolean powerReady, volumeReady, muteReady;
     volatile String connection = "Select your television.";
     Service volumeService, muteService;
+    DiagnosticStore captures;
+    EditText portInput;
+    TextView rendererView, managerView;
+    Button researchButton, eventButton;
+    volatile String rendererState = "Not inspected; read-only renderer state is separate from TV controls.";
+    volatile String managerState = "Not inspected. No vendor ServiceID/ActionID mapping verified.";
+    volatile GenaObserver observer;
+    volatile Device researchTarget;
+
 
     static class Service {
-        String type = "", id = "", control = "", scpd = "";
+        String type = "", id = "", control = "", scpd = "", event = "";
+        boolean scpdRead;
+        final Set<String> evented = new LinkedHashSet<>();
         Set<String> actions = new LinkedHashSet<>();
         int minimum = 0, maximum = 100;
     }
 
     static class Device {
-        String name = "", model = "", manufacturer = "", ip = "", location = "", udn = "";
-        final List<Service> services = new ArrayList<>();
-        boolean sharp() { return LanPolicy.sharp(manufacturer, model); }
+        String name = "", model = "", manufacturer = "", ip = "", location = "", udn = "", presentation = "";
+        int reportedPort = 54871;
+        boolean userConfirmed;
+        final List<Service> services = new CopyOnWriteArrayList<>();
+        boolean sharp() { return LanPolicy.sharp(manufacturer, model)
+                || AwoxResearch.reportedProfile(name, manufacturer, model); }
         boolean exact() { return LanPolicy.exactModel(model); }
         String label() {
-            return (exact() ? "TARGET LC-40UI7352E\n" : sharp() ? "SHARP / UMC candidate\n" : "")
+            return (exact() ? "TARGET LC-40UI7352E\n"
+                    : AwoxResearch.reportedProfile(name, manufacturer, model)
+                    ? "Your tested Sharp (MStar/AwoX profile)\n"
+                    : sharp() ? "SHARP / UMC candidate\n" : "")
                     + (name.isEmpty() ? "Unidentified device" : name)
                     + "\n" + ip + (model.isEmpty() ? "" : " · " + model);
         }
@@ -72,9 +90,10 @@ public class MainActivity extends Activity {
                 log.append(new String(readLimit(in, 1000000), StandardCharsets.UTF_8));
             } catch (Exception ignored) { }
         }
+        captures = new DiagnosticStore(new File(getFilesDir(), "captures"));
         buildUi();
-        append("Sharp LAN Diagnostic v0.2. Exact-model control is unverified. "
-                + "Inspection sends discovery, GETs and read-only queries only.");
+        append("Sharp LAN Diagnostic v0.3 — AwoX research. REAL-TV REPORT: renderer volume/mute "
+                + "did not affect physical TV. ALL TV controls remain locked. No unknown vendor actions.");
     }
 
     int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
@@ -135,6 +154,7 @@ public class MainActivity extends Activity {
         ip.setHintTextColor(Color.GRAY);
         ip.setSingleLine();
         ip.setInputType(InputType.TYPE_CLASS_PHONE);
+        ip.setText("192.168.1.45");
         root.addView(ip);
 
         manualButton = addButton("Select manual TV IP", this::manual);
@@ -148,10 +168,27 @@ public class MainActivity extends Activity {
         confirmTarget.setVisibility(View.GONE);
         root.addView(confirmTarget);
         diagnoseButton = addButton("Inspect selected TV — read-only", this::diagnose);
+        root.addView(tv(AwoxResearch.RENDERER_LABEL, 17));
+        rendererView = tv("", 13);
+        root.addView(rendererView);
+        root.addView(tv("AwoX X_ServiceManager findings", 19));
+        managerView = tv("", 13);
+        managerView.setTextIsSelectable(true);
+        root.addView(managerView);
+        portInput = new EditText(this);
+        portInput.setHint("UPnP/web port from your report or current discovery");
+        portInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+        portInput.setText("54871");
+        root.addView(portInput);
+        researchButton = addButton("Inspect /web + AwoX SCPD — GET only", this::startResearch);
+        eventButton = addButton("Observe ServiceManager events for 30 seconds", this::startEvents);
+        root.addView(tv("Run GET inspection first. During event observation, use the physical TV remote. "
+                + "No JavaScript is executed and no unknown vendor action or property is sent.", 13));
+
 
         root.addView(tv("Remote", 20));
-        root.addView(tv("Only controls supported by a responding interface unlock. "
-                + "An open port or a service name alone never unlocks keys.", 13));
+        root.addView(tv("All TV keys are locked in this research build. Renderer replies and HTTP 200 "
+                + "are not physical TV evidence.", 13));
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         root.addView(controls);
@@ -171,14 +208,14 @@ public class MainActivity extends Activity {
                 + "DLNA media services do not establish full TV control.", 13));
 
         root.addView(tv("Diagnostics", 20));
-        exportButton = addButton("Export log to a file", () -> {
+        exportButton = addButton("Export logs + raw captures (ZIP)", () -> {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("text/plain");
-            intent.putExtra(Intent.EXTRA_TITLE, "sharp-tv-diagnostics.txt");
+            intent.setType("application/zip");
+            intent.putExtra(Intent.EXTRA_TITLE, "SharpLanDiagnostic-0.3-logs.zip");
             startActivityForResult(intent, EXPORT);
         });
-        shareButton = addButton("Share diagnostic log", this::share);
+        shareButton = addButton("Share logs + raw captures", this::share);
         logView = tv("", 12);
         logView.setTypeface(android.graphics.Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
@@ -226,9 +263,9 @@ public class MainActivity extends Activity {
     void refreshUi() {
         if (status == null) return;
         boolean idle = !busy.get();
-        String p = protocol == LEGACY ? "Legacy Sharp TCP: read queries verified"
-                : protocol == UPNP ? "UPnP RenderingControl: read queries verified"
-                : "No remote-control interface verified";
+        String p = protocol == LEGACY ? "Legacy query replies only — TV keys locked"
+                : protocol == UPNP ? "DLNA renderer replies only — TV keys locked"
+                : "No physical TV remote interface verified";
         status.setText((selected == null ? "No TV selected" : selected.label())
                 + "\n" + p + "\n" + (idle ? connection : "Working…"));
         scanButton.setEnabled(idle);
@@ -238,6 +275,14 @@ public class MainActivity extends Activity {
         confirmTarget.setEnabled(idle);
         exportButton.setEnabled(idle);
         shareButton.setEnabled(idle);
+        portInput.setEnabled(idle);
+        researchButton.setEnabled(idle && selected != null);
+        Service manager = selected == null ? null : manager(selected);
+        eventButton.setEnabled(idle && researchTarget == selected
+                && manager != null && manager.scpdRead && !manager.event.isEmpty());
+        rendererView.setText(rendererState);
+        managerView.setText(managerState);
+
         for (int n = 0; n < devices.getChildCount(); n++)
             devices.getChildAt(n).setEnabled(idle);
         for (Map.Entry<String, Button> entry : keyButtons.entrySet())
@@ -248,30 +293,38 @@ public class MainActivity extends Activity {
     }
 
     boolean supports(String key) {
-        if ("Power".equals(key)) return powerReady && protocol == LEGACY;
-        if ("Volume +".equals(key) || "Volume −".equals(key)) return volumeReady;
-        if ("Mute".equals(key)) return muteReady;
-        // No unverified channel, navigation, numeric or Home/Input mappings.
-        return false;
+        // No key mapping has physically controlled this TV. Never promote renderer responses.
+        return normalTvKeyAllowed(key, protocol);
+    }
+
+    static boolean normalTvKeyAllowed(String key, int detectedProtocol) {
+        // No app command + matching TV state + user-confirmed physical effect exists.
+        // The IP confirmation checkbox is identity confirmation, never command verification.
+        return TvControlGate.canUnlock(detectedProtocol == UPNP, false, false);
     }
 
     void resetControl() {
         protocol = NONE;
         powerReady = volumeReady = muteReady = false;
         volumeService = muteService = null;
+        researchTarget = null;
     }
 
-    void job(Work action) {
+    void job(Work action) { runJob(action, true); }
+
+    void localJob(Work action) { runJob(action, false); }
+
+    void runJob(Work action, boolean network) {
         if (!busy.compareAndSet(false, true)) return;
         refreshUi();
         ex.submit(() -> {
             try {
-                selectLan();
+                if (network) selectLan();
                 action.run();
             } catch (Exception e) {
                 resetControl();
                 connection = "Error: " + e.getClass().getSimpleName() + ": " + e.getMessage();
-                append(connection + ". If a command was sent, its outcome may be unknown.");
+                append(connection);
             } finally {
                 busy.set(false);
                 ui(this::refreshUi);
@@ -336,12 +389,23 @@ public class MainActivity extends Activity {
         if (busy.get()) return;
         selected = d;
         resetControl();
+        d.userConfirmed = d.sharp();
+        researchTarget = null;
+        rendererState = "Not inspected. DLNA state never unlocks TV keys.";
+        managerState = "No X_ServiceManager findings for this selection.";
         confirmTarget.setChecked(false);
         confirmTarget.setVisibility(d.sharp() ? View.GONE : View.VISIBLE);
         connection = d.sharp() ? "TV identity found. Ready for read-only inspection."
                 : "Confirm this IP is your Sharp TV before inspection.";
         append("Selected " + d.label() + "; manufacturer=" + d.manufacturer);
         refreshUi();
+        if (!d.location.isEmpty()) {
+            try {
+                d.reportedPort = AwoxResearch.port(new URL(d.location));
+                portInput.setText(Integer.toString(d.reportedPort));
+            }
+            catch (Exception ignored) { }
+        }
         if (d.sharp()) diagnose();
     }
 
@@ -466,6 +530,11 @@ public class MainActivity extends Activity {
         String base = text(doc, "URLBase");
         if (base.isEmpty()) base = location;
         else base = LanPolicy.endpoint(null, base, d.ip).toString();
+        String presentation = child(device, "presentationURL");
+        if (!presentation.isEmpty()) {
+            try { d.presentation = LanPolicy.endpoint(base, presentation, d.ip).toString(); }
+            catch (Exception e) { append("Rejected presentation URL: " + e.getMessage()); }
+        }
         NodeList services = doc.getElementsByTagNameNS("*", "service");
         for (int i = 0; i < services.getLength(); i++) {
             Element element = (Element) services.item(i);
@@ -473,11 +542,13 @@ public class MainActivity extends Activity {
             service.type = child(element, "serviceType");
             service.id = child(element, "serviceId");
             String control = child(element, "controlURL"), scpd = child(element, "SCPDURL");
+            String event = child(element, "eventSubURL");
             try {
                 if (!control.isEmpty()) service.control =
                         LanPolicy.endpoint(base, control, d.ip).toString();
                 if (!scpd.isEmpty()) service.scpd =
                         LanPolicy.endpoint(base, scpd, d.ip).toString();
+                if (!event.isEmpty()) service.event = LanPolicy.endpoint(base, event, d.ip).toString();
                 boolean duplicate = false;
                 for (Service existing : d.services)
                     if (existing.type.equals(service.type) && existing.control.equals(service.control))
@@ -485,7 +556,7 @@ public class MainActivity extends Activity {
                 if (!duplicate) {
                     d.services.add(service);
                     append("Service " + service.type + "\n control=" + service.control
-                            + "\n SCPD=" + service.scpd);
+                            + "\n SCPD=" + service.scpd + "\n event=" + service.event);
                 }
             } catch (Exception e) { append("Rejected service URL: " + e.getMessage()); }
         }
@@ -493,6 +564,8 @@ public class MainActivity extends Activity {
 
     String request(String target, String address, String action, String body) throws Exception {
         requireLocal(target);
+        if (body != null && !AwoxResearch.readOnlySoap(action))
+            throw new IOException("Non-read-only or unidentified SOAP action blocked: " + action);
         URL url = LanPolicy.endpoint(null, address, target);
         HttpURLConnection c = (HttpURLConnection) lan.openConnection(url, java.net.Proxy.NO_PROXY);
         c.setConnectTimeout(1500);
@@ -519,6 +592,7 @@ public class MainActivity extends Activity {
             if (stream != null) try (InputStream in = stream) {
                 response = new String(readLimit(in, RESPONSE_LIMIT), StandardCharsets.UTF_8);
             }
+            capture("http", address, code, c.getHeaderFields(), response.getBytes(StandardCharsets.UTF_8), false);
             append("RECV HTTP " + code + " " + address + (body == null ? "" : "\n" + response));
             if (code < 200 || code >= 300)
                 throw new IOException("HTTP " + code + " " + response.substring(0, Math.min(800, response.length())));
@@ -545,12 +619,17 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Confirm that this IP is your Sharp TV first.", Toast.LENGTH_LONG).show();
             return;
         }
+        d.userConfirmed = confirmed;
+        try { d.reportedPort = parseNumber(portInput.getText().toString().trim(), 1, 65535); }
+        catch (Exception e) { append("Invalid UPnP/web port."); return; }
         job(() -> inspect(d));
     }
 
     void inspect(Device d) throws Exception {
         resetControl();
         requireLocal(d.ip);
+        captures.begin("SharpLanDiagnostic 0.3\nSelected TV: " + d.ip
+                + "\nUser-reported target LC-40UI7352E; no physical key verified.\n");
         append("=== READ-ONLY INSPECTION of selected TV " + d.ip + " ===");
         if (d.location.isEmpty()) {
             append("Looking for an advertised description from this manually selected IP.");
@@ -580,13 +659,13 @@ public class MainActivity extends Activity {
                 parseNumber(tcp(d.ip, "POWR", "????"), 0, 1);
                 parseNumber(tcp(d.ip, "VOLM", "????"), 0, 100);
                 protocol = LEGACY;
-                powerReady = volumeReady = true;
+                powerReady = volumeReady = false;
                 try {
                     parseNumber(tcp(d.ip, "MUTE", "????"), 1, 2);
-                    muteReady = true;
+                    muteReady = false;
                 } catch (Exception e) { append("Legacy mute unavailable: " + e.getMessage()); }
-                append("RESPONDING control interface: legacy Sharp TCP, validated power/volume queries. "
-                        + "This establishes responses, not real-TV button effects.");
+                append("Legacy Sharp query replies observed. All TV keys remain locked: "
+                        + "no physical TV key effect confirmed.");
             } catch (Exception e) {
                 resetControl();
                 append("Legacy Sharp TCP NOT verified: " + e.getMessage());
@@ -602,10 +681,11 @@ public class MainActivity extends Activity {
                         + ": " + e.getMessage());
             }
         }
-        connection = protocol == NONE
-                ? "No compatible remote control verified. Logs retained; no keys unlocked."
-                : "Read interface verified. Physical button effects still require your TV test. "
-                + "Unavailable keys remain locked.";
+        if (manager(d) != null || AwoxResearch.reportedProfile(d.name, d.manufacturer, d.model)) {
+            try { inspectAwox(d); }
+            catch (Exception e) { append("AwoX GET inspection: " + e.getMessage()); }
+        }
+        connection = "Read-only inspection finished. All physical TV keys remain locked.";
         append(connection);
     }
 
@@ -644,6 +724,7 @@ public class MainActivity extends Activity {
 
     String tcp(String host, String operation, String argument) throws Exception {
         requireLocal(host);
+        if (!"????".equals(argument)) throw new IOException("Legacy write commands disabled in research build.");
         String command = LanPolicy.frame(operation, argument);
         try (Socket socket = lan.getSocketFactory().createSocket()) {
             socket.connect(new InetSocketAddress(LanPolicy.address(host), 10002), 1500);
@@ -679,6 +760,8 @@ public class MainActivity extends Activity {
         String raw = request(d.ip, s.scpd, null, null);
         append("SCPD XML " + s.scpd + "\n" + raw);
         Document doc = xml(raw);
+        if (!"scpd".equals(doc.getDocumentElement().getLocalName()))
+            throw new IOException("Endpoint is not an SCPD document.");
         s.actions.clear();
         NodeList actions = doc.getElementsByTagNameNS("*", "action");
         for (int i = 0; i < actions.getLength(); i++)
@@ -686,7 +769,7 @@ public class MainActivity extends Activity {
         NodeList variables = doc.getElementsByTagNameNS("*", "stateVariable");
         for (int i = 0; i < variables.getLength(); i++) {
             Element variable = (Element) variables.item(i);
-            if (!"Volume".equals(child(variable, "name"))) continue;
+            if (!s.type.contains("RenderingControl") || !"Volume".equals(child(variable, "name"))) continue;
             NodeList ranges = variable.getElementsByTagNameNS("*", "allowedValueRange");
             if (ranges.getLength() > 0) {
                 Element range = (Element) ranges.item(0);
@@ -696,7 +779,31 @@ public class MainActivity extends Activity {
                 s.maximum = max;
             }
         }
-        append("Advertised actions " + s.type + ": " + s.actions);
+        s.evented.clear();
+        for (int i = 0; i < variables.getLength(); i++) {
+            Element variable = (Element) variables.item(i);
+            if ("yes".equalsIgnoreCase(variable.getAttribute("sendEvents")))
+                s.evented.add(child(variable, "name"));
+        }
+        s.scpdRead = true;
+        append("Advertised actions " + s.type + ": " + s.actions + "; evented=" + s.evented);
+        if (s.type.equals(AwoxResearch.TYPE)) {
+            for (int i = 0; i < actions.getLength(); i++) {
+                Element action = (Element) actions.item(i);
+                NodeList arguments = action.getElementsByTagNameNS("*", "argument");
+                StringBuilder schema = new StringBuilder(child(action, "name"));
+                for (int j = 0; j < arguments.getLength(); j++) {
+                    Element arg = (Element) arguments.item(j);
+                    schema.append("\n  ").append(child(arg, "direction")).append(" ")
+                            .append(child(arg, "name")).append(" -> ")
+                            .append(child(arg, "relatedStateVariable"));
+                }
+                append("X_ServiceManager schema (not ID values): " + schema);
+            }
+            analyze("X_ServiceManager SCPD", raw);
+            managerState = "SCPD read. Actions=" + s.actions + "; evented=" + s.evented
+                    + "\nNo GetProperty IDs identified; no GetProperty, PerformAction or SetProperty sent.";
+        }
     }
 
     Document soap(Device d, Service s, String action, String arguments) throws Exception {
@@ -721,36 +828,31 @@ public class MainActivity extends Activity {
 
     void safeSoap(Device d, Service s) throws Exception {
         if (s.type.matches("urn:schemas-upnp-org:service:RenderingControl:[0-9]+")) {
+            append(AwoxResearch.RENDERER_LABEL);
             if (s.actions.contains("GetVolume")) {
                 try {
-                    int n = parseNumber(text(soap(d, s, "GetVolume", channelArgs()), "CurrentVolume"),
-                            s.minimum, s.maximum);
-                    append("Read-only volume state: " + n + "; advertised/conservative range "
-                            + s.minimum + ".." + s.maximum);
-                    if (protocol != LEGACY && s.actions.contains("SetVolume")) {
-                        protocol = UPNP;
-                        volumeReady = true;
-                        volumeService = s;
-                    }
-                } catch (Exception e) { append("GetVolume unavailable: " + e.getMessage()); }
+                    int n = parseNumber(text(soap(d, s, "GetVolume", channelArgs()), "CurrentVolume"), 0, 100);
+                    rendererState = AwoxResearch.RENDERER_LABEL + "\nRenderer volume=" + n;
+                    if (protocol != LEGACY) protocol = UPNP;
+                    append("DLNA renderer volume=" + n + "; NOT the physical TV volume.");
+                } catch (Exception e) { append("Renderer GetVolume: " + e.getMessage()); }
             }
             if (s.actions.contains("GetMute")) {
                 try {
-                    parseBoolean(text(soap(d, s, "GetMute", channelArgs()), "CurrentMute"));
-                    if (protocol != LEGACY && s.actions.contains("SetMute")) {
-                        protocol = UPNP;
-                        muteReady = true;
-                        muteService = s;
-                    }
-                } catch (Exception e) { append("GetMute unavailable: " + e.getMessage()); }
+                    boolean muted = parseBoolean(text(soap(d, s, "GetMute", channelArgs()), "CurrentMute"));
+                    rendererState += "\nRenderer mute=" + muted + " (not verified physical TV mute).";
+                    append("DLNA renderer mute=" + muted + "; no TV key unlocked.");
+                } catch (Exception e) { append("Renderer GetMute: " + e.getMessage()); }
             }
         } else if (s.type.matches("urn:schemas-upnp-org:service:AVTransport:[0-9]+")
-                && s.actions.contains("GetTransportInfo")) {
+                && s.actions.contains("GetTransportInfo"))
             soap(d, s, "GetTransportInfo", "<InstanceID>0</InstanceID>");
-        } else if (s.type.matches("urn:schemas-upnp-org:service:ConnectionManager:[0-9]+")
-                && s.actions.contains("GetProtocolInfo")) {
+        else if (s.type.matches("urn:schemas-upnp-org:service:ConnectionManager:[0-9]+")
+                && s.actions.contains("GetProtocolInfo"))
             soap(d, s, "GetProtocolInfo", "");
-        }
+        else if (s.type.equals(AwoxResearch.TYPE))
+            append("X_ServiceManager kept separate. Unknown ID values are never queried or invoked.");
+        powerReady = volumeReady = muteReady = false;
     }
 
     static boolean parseBoolean(String raw) throws IOException {
@@ -759,78 +861,310 @@ public class MainActivity extends Activity {
         throw new IOException("Invalid boolean response: " + raw);
     }
 
-    void legacySet(String operation, String argument) throws Exception {
-        String response = tcp(selected.ip, operation, argument);
-        if (!"OK".equals(response)) throw new IOException("Command rejected/unacknowledged: " + response);
-    }
+
 
     void sendKey(String key) throws Exception {
-        if (!supports(key)) throw new IOException("Control is locked.");
-        Device d = selected;
-        if ("Power".equals(key)) {
-            int current = parseNumber(tcp(d.ip, "POWR", "????"), 0, 1);
-            legacySet("POWR", current == 1 ? "0" : "1");
-            connection = "Power command acknowledged; standby network wake is not guaranteed.";
-        } else if ("Volume +".equals(key) || "Volume −".equals(key)) {
-            int current, min, max;
-            if (protocol == LEGACY) {
-                current = parseNumber(tcp(d.ip, "VOLM", "????"), 0, 100);
-                min = 0;
-                max = 60;
-            } else {
-                current = parseNumber(text(soap(d, volumeService, "GetVolume", channelArgs()),
-                        "CurrentVolume"), volumeService.minimum, volumeService.maximum);
-                min = volumeService.minimum;
-                max = volumeService.maximum;
-            }
-            int target = current + ("Volume +".equals(key) ? 1 : -1);
-            if (target < min || (target > current && target > max)) {
-                append("Conservative/advertised volume boundary; no write sent.");
-                return;
-            }
-            if (protocol == LEGACY) legacySet("VOLM", Integer.toString(target));
-            else soap(d, volumeService, "SetVolume", channelArgs()
-                    + "<DesiredVolume>" + target + "</DesiredVolume>");
-            connection = "Volume command acknowledged. Confirm its effect on the real TV.";
-        } else if ("Mute".equals(key)) {
-            if (protocol == LEGACY) {
-                int current = parseNumber(tcp(d.ip, "MUTE", "????"), 1, 2);
-                legacySet("MUTE", current == 1 ? "2" : "1");
-            } else {
-                boolean current = parseBoolean(text(soap(d, muteService, "GetMute", channelArgs()),
-                        "CurrentMute"));
-                soap(d, muteService, "SetMute", channelArgs()
-                        + "<DesiredMute>" + (current ? "0" : "1") + "</DesiredMute>");
-            }
-            connection = "Mute command acknowledged. Confirm its effect on the real TV.";
-        }
-        append(connection);
+        throw new IOException("All normal TV keys are locked pending identified mappings "
+                + "and actual physical-TV evidence. No command sent.");
     }
 
     void share() {
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setType("text/plain");
-        intent.putExtra(Intent.EXTRA_SUBJECT, "Sharp LC-40UI7352E diagnostic");
-        intent.putExtra(Intent.EXTRA_TEXT, report());
-        try { startActivity(Intent.createChooser(intent, "Share diagnostic log")); }
-        catch (Exception e) { append("Share failed: " + e.getMessage()); }
+        localJob(() -> {
+            File snapshot = new File(getCacheDir(), "report-" + UUID.randomUUID().toString() + ".zip");
+            try (OutputStream out = new FileOutputStream(snapshot)) { captures.zip(out, report()); }
+            ui(() -> {
+                Uri uri = Uri.parse("content://" + getPackageName() + ".diagnostics/" + snapshot.getName());
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType("application/zip");
+                intent.putExtra(Intent.EXTRA_SUBJECT, "Sharp LC-40UI7352E AwoX diagnostic");
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.setClipData(ClipData.newRawUri("Diagnostic archive", uri));
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try { startActivity(Intent.createChooser(intent, "Share logs and captures")); }
+                catch (Exception e) { append("Share failed: " + e.getMessage()); }
+            });
+        });
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request != EXPORT || result != RESULT_OK || data == null || data.getData() == null) return;
         final Uri destination = data.getData();
-        final String content = report();
-        ex.submit(() -> {
+        localJob(() -> {
             try (OutputStream out = getContentResolver().openOutputStream(destination)) {
                 if (out == null) throw new IOException("Cannot open export destination.");
-                out.write(content.getBytes(StandardCharsets.UTF_8));
-                append("Diagnostic report exported.");
-            } catch (Exception e) { append("Export failed: " + e.getMessage()); }
+                captures.zip(out, report());
+                append("Diagnostic ZIP exported with raw captures, metadata, ID candidates and log.");
+            }
+        });
+    }
+
+    Service manager(Device d) {
+        for (Service service : d.services) if (AwoxResearch.TYPE.equals(service.type)) return service;
+        return null;
+    }
+
+    boolean confirmSelection(Device d) {
+        if (d == null) return false;
+        if (!d.sharp() && !confirmTarget.isChecked()) {
+            Toast.makeText(this, "Confirm this IP is your Sharp TV first.", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        d.userConfirmed = true;
+        return true;
+    }
+
+    void startResearch() {
+        Device d = selected;
+        if (busy.get() || !confirmSelection(d)) return;
+        try {
+            String port = portInput.getText().toString().trim();
+            d.reportedPort = parseNumber(port, 1, 65535);
+        } catch (Exception e) {
+            Toast.makeText(this, "Enter the reported/discovered port, 1–65535.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        job(() -> {
+            captures.begin("SharpLanDiagnostic 0.3 AwoX research\nSelected confirmed TV: "
+                    + d.ip + "\nUser-entered reported port: " + d.reportedPort
+                    + "\nNo physical TV key is verified.\n");
+            inspectAwox(d);
+        });
+    }
+
+    void capture(String kind, String source, int code, Map<String, List<String>> headers,
+                 byte[] body, boolean truncated) {
+        try {
+            String saved = captures.capture(kind, source, code, headers, body, truncated);
+            append("RAW CAPTURE " + saved + " source=" + source + " bytes=" + body.length
+                    + (truncated ? " [TRUNCATED AT SAFETY LIMIT]" : ""));
+        } catch (Exception e) { append("Capture could not be saved: " + e.getMessage()); }
+    }
+
+    void analyze(String source, String body) {
+        List<String> findings = AwoxResearch.findings(source, body);
+        try { captures.findings(findings); }
+        catch (Exception e) { append("Findings save: " + e.getMessage()); }
+        int ids = 0;
+        for (String finding : findings) {
+            if (finding.startsWith("UNVERIFIED")) ids++;
+            append(finding);
+        }
+        managerState = "X_ServiceManager research: " + source + "\n"
+                + ids + " textual ID candidates; " + findings.size() + " contexts captured."
+                + "\nCandidates are unverified and never sent. No physical TV key mapping proven.";
+    }
+
+    static class ResearchResponse {
+        URL url;
+        int code;
+        byte[] bytes;
+        String body, location = "";
+        boolean truncated;
+    }
+
+    ResearchResponse researchGet(Device d, URL url, int limit) throws Exception {
+        requireLocal(d.ip);
+        LanPolicy.endpoint(null, url.toString(), d.ip);
+        append("GET-ONLY RESEARCH " + url);
+        HttpURLConnection connection = (HttpURLConnection) lan.openConnection(url, java.net.Proxy.NO_PROXY);
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(1800);
+        connection.setReadTimeout(2500);
+        connection.setUseCaches(false);
+        connection.setInstanceFollowRedirects(false);
+        connection.setRequestProperty("Accept-Encoding", "identity");
+        try {
+            ResearchResponse response = new ResearchResponse();
+            response.url = url;
+            response.code = connection.getResponseCode();
+            response.location = connection.getHeaderField("Location");
+            Map<String, List<String>> headers = new LinkedHashMap<>(connection.getHeaderFields());
+            InputStream raw = response.code >= 400
+                    ? connection.getErrorStream() : connection.getInputStream();
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            if (raw != null) {
+                InputStream decoded = "gzip".equalsIgnoreCase(connection.getContentEncoding())
+                        ? new java.util.zip.GZIPInputStream(raw) : raw;
+                if (decoded != raw) headers.put("X-Diagnostic-Decoded-Content-Encoding", Arrays.asList("gzip"));
+                try (InputStream in = decoded) {
+                    byte[] buffer = new byte[4096];
+                    int count;
+                    while ((count = in.read(buffer)) != -1) {
+                        int remaining = limit - bytes.size();
+                        bytes.write(buffer, 0, Math.min(count, remaining));
+                        if (count > remaining || bytes.size() == limit) {
+                            response.truncated = count > remaining || in.read() != -1;
+                            break;
+                        }
+                    }
+                }
+            }
+            response.bytes = bytes.toByteArray();
+            response.body = new String(response.bytes, StandardCharsets.UTF_8);
+            capture("web", url.toString(), response.code, headers, response.bytes, response.truncated);
+            append("WEB HTTP " + response.code + " " + url + "\n"
+                    + response.body.substring(0, Math.min(3000, response.body.length())));
+            return response;
+        } finally { connection.disconnect(); }
+    }
+
+    void inspectAwox(Device d) throws Exception {
+        requireLocal(d.ip);
+        if (!d.userConfirmed && !d.sharp()) throw new IOException("Selected TV is not confirmed.");
+        researchTarget = null;
+        Service service = manager(d);
+        URL origin;
+        // The explicit port field can override a stale DHCP/reboot-era advertised port.
+        if (!d.presentation.isEmpty()
+                && AwoxResearch.port(new URL(d.presentation)) == d.reportedPort)
+            origin = LanPolicy.endpoint(null, d.presentation, d.ip);
+        else origin = new URL("http", d.ip, d.reportedPort, "/web");
+        origin = AwoxResearch.resource(origin, origin, origin.toString());
+        append("=== AwoX GET research origin " + origin + " ===\n"
+                + "Known endpoints are user-reported or advertised, not a guessed key API.");
+        if (service == null || service.scpd.isEmpty()
+                || !AwoxResearch.sameOrigin(origin, new URL(service.scpd))) {
+            service = new Service();
+            service.type = AwoxResearch.TYPE;
+            service.id = "urn:schemas-awox-com:serviceId:X_ServiceManager";
+            service.scpd = new URL(origin, "/MediaRenderer_X_ServiceManager/scpd.xml").toString();
+            service.control = new URL(origin, "/MediaRenderer_X_ServiceManager/control").toString();
+            service.event = new URL(origin, "/MediaRenderer_X_ServiceManager/event").toString();
+            d.services.removeIf(item -> item.type.equals(AwoxResearch.TYPE));
+            d.services.add(service);
+            append("Using exact X_ServiceManager endpoint paths from your real-TV report. "
+                    + "GET validates the SCPD; control endpoint will NOT be invoked.");
+        }
+        // Fetch the reported presentation page first. Never instantiate a WebView.
+        try { crawlWeb(d, origin); }
+        catch (Exception e) { append("/web inspection: " + e.getMessage()); }
+        try {
+            readScpd(d, service);
+            if (!service.event.isEmpty()
+                    && AwoxResearch.sameOrigin(origin, new URL(service.event))) {
+                researchTarget = d;
+                managerState += "\nSCPD GET completed. Event observation is available."
+                        + "\nPress the physical remote during the 30-second observation.";
+            }
+        } catch (Exception e) {
+            managerState = "X_ServiceManager SCPD not validated: " + e.getMessage()
+                    + "\nRaw web captures retained. All TV keys locked.";
+            append(managerState);
+        }
+        connection = "AwoX GET inspection finished. Export the ZIP to inspect full resources.";
+        append(connection);
+    }
+
+    void crawlWeb(Device d, URL origin) throws Exception {
+        class Page {
+            final URL url; final int depth;
+            Page(URL url, int depth) { this.url = url; this.depth = depth; }
+        }
+        ArrayDeque<Page> queue = new ArrayDeque<>();
+        Set<String> visited = new LinkedHashSet<>();
+        queue.add(new Page(origin, 0));
+        int remaining = 4 * 1024 * 1024;
+        while (!queue.isEmpty() && visited.size() < 16 && remaining > 0
+                && !Thread.currentThread().isInterrupted()) {
+            Page next = queue.removeFirst();
+            URL url;
+            try { url = AwoxResearch.resource(origin, next.url, next.url.toString()); }
+            catch (Exception e) { append("Skipped unsafe resource: " + e.getMessage()); continue; }
+            if (!visited.add(url.toString())) continue;
+            try {
+                ResearchResponse response = researchGet(d, url, Math.min(524288, remaining));
+                remaining -= response.bytes.length;
+                analyze(url.toString(), response.body);
+                if (response.code >= 300 && response.code < 400 && response.location != null) {
+                    if (next.depth < 3) {
+                        try {
+                            queue.addFirst(new Page(AwoxResearch.resource(
+                                    origin, url, response.location), next.depth + 1));
+                        } catch (Exception e) { append("Rejected web redirect: " + e.getMessage()); }
+                    }
+                } else if (response.code >= 200 && response.code < 300 && next.depth < 2) {
+                    for (URL reference : AwoxResearch.references(origin, url, response.body))
+                        if (queue.size() < 64 && !visited.contains(reference.toString()))
+                            queue.addLast(new Page(reference, next.depth + 1));
+                }
+            } catch (Exception e) { append("Resource GET failed " + url + ": " + e.getMessage()); }
+        }
+        append("Web inspection finished: " + visited.size() + " bounded resources. "
+                + "No JS execution, forms, unknown queries or action-like links. "
+                + "Dynamic non-static endpoints were not guessed.");
+    }
+
+    void startEvents() {
+        Device d = selected;
+        if (busy.get() || !confirmSelection(d)) return;
+        job(() -> {
+            Service service = manager(d);
+            if (researchTarget != d || service == null || !service.scpdRead || service.event.isEmpty())
+                throw new IOException("Run GET-only AwoX inspection on this network first.");
+            requireLocal(d.ip);
+            URL event = LanPolicy.endpoint(null, service.event, d.ip);
+            if (!AwoxResearch.sameOrigin(event, new URL(service.scpd)))
+                throw new IOException("Event URL differs from inspected ServiceManager origin.");
+            String local = null;
+            for (LinkAddress address : localAddresses)
+                if (LanPolicy.sameSubnet(d.ip, address.getAddress().getHostAddress(), address.getPrefixLength())) {
+                    local = address.getAddress().getHostAddress(); break;
+                }
+            if (local == null) throw new IOException("No matching local callback address.");
+            managerState = "Observing ServiceManager events for up to 30 seconds. "
+                    + "Use the PHYSICAL TV remote for Volume, Mute, navigation and Input."
+                    + "\nEvent changes are correlation evidence, not a verified command mapping.";
+            append(managerState);
+            observer = new GenaObserver(lan.getSocketFactory(), d.ip, local, event, new GenaObserver.Sink() {
+                @Override public void log(String message) {
+                    append(message);
+                    capture("gena-transport", event.toString(), 0, Collections.emptyMap(),
+                            message.getBytes(StandardCharsets.UTF_8), false);
+                }
+                @Override public void event(GenaProtocol.Message message) {
+                    Map<String, List<String>> headers = new LinkedHashMap<>();
+                    for (Map.Entry<String, String> entry : message.headers.entrySet())
+                        headers.put(entry.getKey(), Arrays.asList(entry.getValue()));
+                    capture("event", event.toString(), 200, headers, message.body, false);
+                    String raw = new String(message.body, StandardCharsets.UTF_8);
+                    append("VALIDATED EVENT SID=" + message.headers.get("sid")
+                            + " SEQ=" + message.headers.get("seq") + "\n" + raw);
+                    analyze("X_ServiceManager event", raw);
+                    try {
+                        Document doc = xml(raw);
+                        NodeList properties = doc.getElementsByTagNameNS("*", "property");
+                        for (int i = 0; i < properties.getLength(); i++) {
+                            Node node = properties.item(i).getFirstChild();
+                            while (node != null) {
+                                if (node instanceof Element) {
+                                    String name = node.getLocalName(), value = node.getTextContent();
+                                    append("EVENT PROPERTY " + name + " = "
+                                            + value.substring(0, Math.min(12000, value.length())));
+                                    capture("event-decoded", event + "#" + name, 200,
+                                            Collections.emptyMap(), value.getBytes(StandardCharsets.UTF_8), false);
+                                    analyze("Event property " + name, value);
+                                }
+                                node = node.getNextSibling();
+                            }
+                        }
+                    } catch (Exception e) { append("Event XML retained but could not parse: " + e.getMessage()); }
+                }
+            });
+            ui(() -> getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+            try { observer.observe(); }
+            finally {
+                observer = null;
+                ui(() -> getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+            }
+            managerState += "\nObservation finished. Export logs + captures ZIP; all TV keys remain locked.";
+            append(managerState);
         });
     }
 
     @Override protected void onDestroy() {
+        GenaObserver active = observer;
+        if (active != null) active.cancel();
         DatagramSocket socket = discoverySocket;
         if (socket != null) socket.close();
         ex.shutdownNow();

@@ -6,6 +6,13 @@ import java.io.IOException;
 import static org.junit.Assert.*;
 
 public class UpnpParsingTest {
+    @Test public void everyNormalKeyStaysLockedForEveryPreviouslyRespondingProtocol() {
+        for (int protocol : new int[]{MainActivity.NONE, MainActivity.LEGACY, MainActivity.UPNP})
+            for (String key : new String[]{"Power", "Volume +", "Volume −", "Mute", "Up", "Down",
+                    "Left", "Right", "OK", "Back", "Home", "Input", "Channel +", "Channel −", "Menu", "0"})
+                assertFalse(key + " must stay locked", MainActivity.normalTvKeyAllowed(key, protocol));
+    }
+
     @Test public void readsNamespacedSoapVolume() throws Exception {
         String xml = "<s:Envelope xmlns:s='http://schemas.xmlsoap.org/soap/envelope/'>"
                 + "<s:Body><u:GetVolumeResponse "
